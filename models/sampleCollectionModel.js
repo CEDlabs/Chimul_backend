@@ -1,5 +1,6 @@
 const { connectDB, sql } = require("../config/db");
 const AuditLog = require("./auditLogModel");
+const AlternativeVehicle = require("./alternativeVehicleModel");
 
 const ensureTable = async (pool) => {
     await pool.execute(`
@@ -13,6 +14,8 @@ const ensureTable = async (pool) => {
             taluk VARCHAR(100) NULL,
             materialType VARCHAR(100) NULL,
             sealNumbers ${sql.longText} NULL,
+            sealStatus VARCHAR(50) NULL,
+            sealDiscrepancyReason ${sql.longText} NULL,
             quantity VARCHAR(50) NOT NULL,
             temperature VARCHAR(50) NOT NULL,
             remarks ${sql.longText} NULL,
@@ -23,6 +26,26 @@ const ensureTable = async (pool) => {
             INDEX idx_sc_vehicle (vehicleNumber)
         )
     `);
+    await pool.execute(`
+        CREATE TABLE IF NOT EXISTS SampleCompartmentTests (
+            id INT ${sql.autoIncrement} PRIMARY KEY,
+            sampleId VARCHAR(50) NOT NULL,
+            vehicleNumber VARCHAR(20) NOT NULL,
+            compartment VARCHAR(20) NOT NULL,
+            foreignMatter VARCHAR(20) NULL,
+            flavour VARCHAR(20) NULL,
+            temperature VARCHAR(20) NULL,
+            cob VARCHAR(20) NULL,
+            skipped TINYINT(1) NOT NULL DEFAULT 0,
+            testedBy VARCHAR(150) NULL,
+            testedById VARCHAR(50) NULL,
+            testedAt DATETIME NULL,
+            createdAt DATETIME NOT NULL DEFAULT ${sql.now()},
+            UNIQUE KEY uq_sample_comp (sampleId, compartment),
+            INDEX idx_sct_sample (sampleId)
+        )
+    `);
+    await migrateSealAndCompartmentColumns(pool);
 };
 
 const migrateRemarksColumn = async (pool) => {
@@ -36,6 +59,74 @@ const migrateRemarksColumn = async (pool) => {
     } catch (_) { /* ignore if table does not exist yet */ }
 };
 
+const migrateSealAndCompartmentColumns = async (pool) => {
+    const addCol = async (col, ddl) => {
+        try {
+            const rows = await pool.execute(
+                "SELECT COUNT(*) AS c FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'SampleCollections' AND COLUMN_NAME = ?",
+                [col]
+            );
+            if (!rows.length || rows[0].c === 0) await pool.execute(`ALTER TABLE SampleCollections ADD COLUMN ${ddl}`);
+        } catch (_) { /* ignore */ }
+    };
+    await addCol("sealStatus", "sealStatus VARCHAR(50) NULL");
+    await addCol("sealDiscrepancyReason", "sealDiscrepancyReason LONGTEXT NULL");
+};
+
+const saveCompartments = async (pool, data, collectedAt) => {
+    const compartments = Array.isArray(data.compartments) ? data.compartments : [];
+    for (const c of compartments) {
+        const compartment = String(c.compartment || "").trim().toLowerCase();
+        if (!compartment) continue;
+
+        const tempVal = c.temperature === undefined || c.temperature === null || c.temperature === "" ? null : String(c.temperature);
+        const existingComp = await pool.execute(
+            "SELECT id FROM SampleCompartmentTests WHERE sampleId = ? AND compartment = ? LIMIT 1",
+            [data.sampleId, compartment]
+        ).catch(() => []);
+
+        if (existingComp && existingComp.length > 0) {
+            await pool.execute(
+                `UPDATE SampleCompartmentTests
+                 SET vehicleNumber = ?, foreignMatter = ?, flavour = ?, temperature = ?, cob = ?, skipped = ?, testedBy = ?, testedById = ?, testedAt = ?
+                 WHERE sampleId = ? AND compartment = ?`,
+                [
+                    String(data.vehicleNumber || "").toUpperCase(),
+                    c.foreignMatter || "",
+                    c.flavour || "",
+                    tempVal,
+                    c.cob || "",
+                    c.skipped ? 1 : 0,
+                    data.sampleCollectedBy || "",
+                    data.sampleCollectedByEmpId || "",
+                    data.collectedAt ? new Date(data.collectedAt) : collectedAt,
+                    data.sampleId,
+                    compartment,
+                ]
+            );
+        } else {
+            await pool.execute(
+                `INSERT INTO SampleCompartmentTests
+                 (sampleId, vehicleNumber, compartment, foreignMatter, flavour, temperature, cob, skipped, testedBy, testedById, testedAt)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                [
+                    data.sampleId,
+                    String(data.vehicleNumber || "").toUpperCase(),
+                    compartment,
+                    c.foreignMatter || "",
+                    c.flavour || "",
+                    tempVal,
+                    c.cob || "",
+                    c.skipped ? 1 : 0,
+                    data.sampleCollectedBy || "",
+                    data.sampleCollectedByEmpId || "",
+                    data.collectedAt ? new Date(data.collectedAt) : collectedAt,
+                ]
+            );
+        }
+    }
+};
+
 exports.create = async (data) => {
     const pool = await connectDB();
     await ensureTable(pool);
@@ -45,41 +136,106 @@ exports.create = async (data) => {
         ? new Date(data.collectedAt)
         : new Date();
     const sealNumbers = Array.isArray(data.sealNumbers) ? JSON.stringify(data.sealNumbers) : (data.sealNumbers || "[]");
+    const sealStatus = data.sealStatus || "Intact";
+    const sealDiscrepancyReason = data.sealDiscrepancyReason || null;
 
-    const existingRows = await pool.execute(
-        "SELECT sampleId, vehicleNumber, collectedAt FROM SampleCollections WHERE vehicleNumber = ? AND DATE(collectedAt) = DATE(?) AND (isDeleted IS NULL OR isDeleted = 0) LIMIT 1",
-        [String(data.vehicleNumber).toUpperCase(), collectedAt]
+    let targetSampleId = data.sampleId;
+    const existingBySample = await pool.execute(
+        "SELECT sampleId FROM SampleCollections WHERE sampleId = ? AND (isDeleted IS NULL OR isDeleted = 0) LIMIT 1",
+        [data.sampleId]
     ).catch(() => []);
-    if (existingRows && existingRows.length > 0) {
-        const dup = existingRows[0];
-        const dupDate = new Date(dup.collectedAt).toLocaleDateString("en-IN", { day: "2-digit", month: "2-digit", year: "numeric" });
-        throw new Error(`Sample collection already exists for vehicle ${dup.vehicleNumber} on ${dupDate} (Sample ID: ${dup.sampleId}). Duplicate entries are not allowed.`);
+
+    if (!existingBySample || existingBySample.length === 0) {
+        const existingRows = await pool.execute(
+            "SELECT sampleId, vehicleNumber, collectedAt FROM SampleCollections WHERE vehicleNumber = ? AND DATE(collectedAt) = DATE(?) AND (isDeleted IS NULL OR isDeleted = 0) LIMIT 1",
+            [String(data.vehicleNumber).toUpperCase(), collectedAt]
+        ).catch(() => []);
+        if (existingRows && existingRows.length > 0) {
+            // Update existing record for vehicle today instead of throwing duplicate error
+            targetSampleId = existingRows[0].sampleId;
+            data.sampleId = targetSampleId;
+            await pool.execute(
+                `UPDATE SampleCollections SET
+                    vehicleNumber = ?, gateEntryId = ?, wbEntryId = ?, routeNo = ?, taluk = ?, materialType = ?,
+                    sealNumbers = ?, sealStatus = ?, sealDiscrepancyReason = ?, quantity = ?, temperature = ?,
+                    remarks = ?, sampleCollectedBy = ?, sampleCollectedByEmpId = ?, collectedAt = ?
+                 WHERE sampleId = ?`,
+                [
+                    String(data.vehicleNumber).toUpperCase(),
+                    data.gateEntryId || "",
+                    data.wbEntryId || "",
+                    data.routeNo || "",
+                    data.taluk || "",
+                    data.materialType || "",
+                    sealNumbers,
+                    sealStatus,
+                    sealDiscrepancyReason,
+                    data.quantity,
+                    data.temperature,
+                    data.remarks || "",
+                    data.sampleCollectedBy || "",
+                    data.sampleCollectedByEmpId || "",
+                    collectedAt,
+                    targetSampleId,
+                ]
+            );
+        } else {
+            await pool.execute(
+                `INSERT INTO SampleCollections
+                 (sampleId, vehicleNumber, gateEntryId, wbEntryId, routeNo, taluk, materialType, sealNumbers,
+                  sealStatus, sealDiscrepancyReason, quantity, temperature, remarks, sampleCollectedBy, sampleCollectedByEmpId, collectedAt)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                [
+                    data.sampleId,
+                    String(data.vehicleNumber).toUpperCase(),
+                    data.gateEntryId || "",
+                    data.wbEntryId || "",
+                    data.routeNo || "",
+                    data.taluk || "",
+                    data.materialType || "",
+                    sealNumbers,
+                    sealStatus,
+                    sealDiscrepancyReason,
+                    data.quantity,
+                    data.temperature,
+                    data.remarks || "",
+                    data.sampleCollectedBy || "",
+                    data.sampleCollectedByEmpId || "",
+                    collectedAt,
+                ]
+            );
+        }
+    } else {
+        await pool.execute(
+            `UPDATE SampleCollections SET
+                vehicleNumber = ?, gateEntryId = ?, wbEntryId = ?, routeNo = ?, taluk = ?, materialType = ?,
+                sealNumbers = ?, sealStatus = ?, sealDiscrepancyReason = ?, quantity = ?, temperature = ?,
+                remarks = ?, sampleCollectedBy = ?, sampleCollectedByEmpId = ?, collectedAt = ?
+             WHERE sampleId = ?`,
+            [
+                String(data.vehicleNumber).toUpperCase(),
+                data.gateEntryId || "",
+                data.wbEntryId || "",
+                data.routeNo || "",
+                data.taluk || "",
+                data.materialType || "",
+                sealNumbers,
+                sealStatus,
+                sealDiscrepancyReason,
+                data.quantity,
+                data.temperature,
+                data.remarks || "",
+                data.sampleCollectedBy || "",
+                data.sampleCollectedByEmpId || "",
+                collectedAt,
+                data.sampleId,
+            ]
+        );
     }
 
-    await pool.execute(
-        `INSERT INTO SampleCollections
-         (sampleId, vehicleNumber, gateEntryId, wbEntryId, routeNo, taluk, materialType, sealNumbers,
-          quantity, temperature, remarks, sampleCollectedBy, sampleCollectedByEmpId, collectedAt)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [
-            data.sampleId,
-            String(data.vehicleNumber).toUpperCase(),
-            data.gateEntryId || "",
-            data.wbEntryId || "",
-            data.routeNo || "",
-            data.taluk || "",
-            data.materialType || "",
-            sealNumbers,
-            data.quantity,
-            data.temperature,
-            data.remarks || "",
-            data.sampleCollectedBy || "",
-            data.sampleCollectedByEmpId || "",
-            collectedAt,
-        ]
-    );
+    await saveCompartments(pool, data, collectedAt);
 
-    return { ...data, vehicleNumber: String(data.vehicleNumber).toUpperCase(), collectedAt };
+    return { ...data, sampleId: targetSampleId, vehicleNumber: String(data.vehicleNumber).toUpperCase(), collectedAt };
 };
 
 exports.getAll = async ({ vehicleNumber, startDate, endDate, search } = {}) => {
@@ -109,23 +265,151 @@ exports.getAll = async ({ vehicleNumber, startDate, endDate, search } = {}) => {
     query += " ORDER BY collectedAt DESC, id DESC";
 
     const rows = await pool.execute(query, params);
+    if (rows && rows.length > 0) {
+        const sampleIds = rows.map((r) => r.sampleId);
+        const placeholders = sampleIds.map(() => "?").join(",");
+        const compRows = await pool.execute(
+            `SELECT sampleId, compartment, foreignMatter, flavour, temperature, cob, skipped
+             FROM SampleCompartmentTests WHERE sampleId IN (${placeholders}) ORDER BY compartment`,
+            sampleIds
+        ).catch(() => []);
+        const bySample = {};
+        (compRows || []).forEach((c) => {
+            if (!bySample[c.sampleId]) bySample[c.sampleId] = [];
+            bySample[c.sampleId].push(c);
+        });
+        rows.forEach((r) => { r.compartments = bySample[r.sampleId] || []; });
+    }
     return rows;
+};
+
+exports.getCompartments = async (sampleId) => {
+    const pool = await connectDB();
+    await ensureTable(pool);
+    const rows = await pool.execute(
+        "SELECT compartment, foreignMatter, flavour, temperature, cob, skipped FROM SampleCompartmentTests WHERE sampleId = ? ORDER BY compartment",
+        [sampleId]
+    ).catch(() => []);
+    return rows || [];
+};
+
+exports.getByVehicleAndDate = async (vehicleNumber, date) => {
+    const pool = await connectDB();
+    await ensureTable(pool);
+    const rows = await pool.execute(
+        "SELECT * FROM SampleCollections WHERE vehicleNumber = ? AND DATE(collectedAt) = DATE(?) AND (isDeleted IS NULL OR isDeleted = 0) ORDER BY collectedAt DESC, id DESC LIMIT 1",
+        [String(vehicleNumber || "").trim().toUpperCase(), date || new Date()]
+    ).catch(() => []);
+    if (!rows || rows.length === 0) return null;
+    const row = rows[0];
+    if (row.sealNumbers && typeof row.sealNumbers === "string") {
+        try { row.sealNumbers = JSON.parse(row.sealNumbers); } catch { row.sealNumbers = []; }
+    }
+    row.compartments = await exports.getCompartments(row.sampleId);
+    return row;
 };
 
 exports.getVehicleData = async (vehicleNumber) => {
     const pool = await connectDB();
-    const normalizedVehicle = String(vehicleNumber || "").trim().toUpperCase();
-    if (!normalizedVehicle) return { gate: null, weighbridge: null };
+    const input = String(vehicleNumber || "").trim().toUpperCase();
+    if (!input) return { gate: null, weighbridge: null };
 
-    const [gateResult, weighbridgeResult] = await Promise.all([
-        pool.execute("SELECT * FROM GateEntries WHERE vehicleNumber = ? ORDER BY createdAt DESC, id DESC LIMIT 1", [normalizedVehicle]),
-        pool.execute("SELECT * FROM WeighBridgeEntries WHERE vehicleNumber = ? ORDER BY createdAt DESC, id DESC LIMIT 1", [normalizedVehicle]),
-    ]);
+    // Strip spaces and hyphens for flexible plate matching (e.g. KA-01-AB-1234 vs KA01AB1234)
+    const cleanInput = input.replace(/[\s-]/g, "");
+
+    // Expand search list using active alternative vehicle window today
+    const today = new Date().toISOString().slice(0, 10);
+    const searchPlates = new Set([input, cleanInput]);
+
+    try {
+        const alt = await AlternativeVehicle.findActiveForVehicle(input, today);
+        if (alt) {
+            if (alt.primaryVehicleNumber) {
+                searchPlates.add(String(alt.primaryVehicleNumber).trim().toUpperCase());
+                searchPlates.add(String(alt.primaryVehicleNumber).trim().toUpperCase().replace(/[\s-]/g, ""));
+            }
+            if (alt.alternativeVehicleNumber) {
+                searchPlates.add(String(alt.alternativeVehicleNumber).trim().toUpperCase());
+                searchPlates.add(String(alt.alternativeVehicleNumber).trim().toUpperCase().replace(/[\s-]/g, ""));
+            }
+        }
+    } catch (_) {}
+
+    const plateArray = Array.from(searchPlates).filter(Boolean);
+
+    // 1. Lookup Gate Entry
+    let gateResult = [];
+    if (plateArray.length > 0) {
+        const placeholders = plateArray.map(() => "?").join(",");
+        gateResult = await pool.execute(
+            `SELECT * FROM GateEntries
+             WHERE (isDeleted IS NULL OR isDeleted = 0)
+               AND (
+                 UPPER(vehicleNumber) IN (${placeholders})
+                 OR REPLACE(REPLACE(UPPER(vehicleNumber), ' ', ''), '-', '') IN (${placeholders})
+               )
+             ORDER BY COALESCE(entryDateTime, createdAt) DESC, id DESC LIMIT 1`,
+            [...plateArray, ...plateArray]
+        ).catch(() => []);
+    }
+
+    // Fallback: If no Gate Entry found by plate, search by routeName
+    if (!gateResult || gateResult.length === 0) {
+        gateResult = await pool.execute(
+            `SELECT * FROM GateEntries
+             WHERE (isDeleted IS NULL OR isDeleted = 0)
+               AND UPPER(routeName) = UPPER(?)
+             ORDER BY COALESCE(entryDateTime, createdAt) DESC, id DESC LIMIT 1`,
+            [input]
+        ).catch(() => []);
+    }
+
+    // 2. Lookup WeighBridge Entry
+    let weighbridgeResult = [];
+    if (plateArray.length > 0) {
+        const placeholders = plateArray.map(() => "?").join(",");
+        weighbridgeResult = await pool.execute(
+            `SELECT * FROM WeighBridgeEntries
+             WHERE (isDeleted IS NULL OR isDeleted = 0)
+               AND (
+                 UPPER(vehicleNumber) IN (${placeholders})
+                 OR REPLACE(REPLACE(UPPER(vehicleNumber), ' ', ''), '-', '') IN (${placeholders})
+               )
+             ORDER BY COALESCE(initialWeightAt, createdAt) DESC, id DESC LIMIT 1`,
+            [...plateArray, ...plateArray]
+        ).catch(() => []);
+    }
+
+    // Fallback: If no WeighBridge Entry found by plate, search by routeName
+    if (!weighbridgeResult || weighbridgeResult.length === 0) {
+        weighbridgeResult = await pool.execute(
+            `SELECT * FROM WeighBridgeEntries
+             WHERE (isDeleted IS NULL OR isDeleted = 0)
+               AND UPPER(routeName) = UPPER(?)
+             ORDER BY COALESCE(initialWeightAt, createdAt) DESC, id DESC LIMIT 1`,
+            [input]
+        ).catch(() => []);
+    }
 
     const gate = gateResult[0] || null;
-    if (gate?.sealNumbers && typeof gate.sealNumbers === "string") {
-        try { gate.sealNumbers = JSON.parse(gate.sealNumbers); } catch { gate.sealNumbers = []; }
+    if (gate) {
+        let seals = [];
+        if (gate.sealNumbers) {
+            if (typeof gate.sealNumbers === "string") {
+                try { seals = JSON.parse(gate.sealNumbers); } catch { seals = []; }
+            } else if (Array.isArray(gate.sealNumbers)) {
+                seals = gate.sealNumbers;
+            }
+        }
+        if (!Array.isArray(seals) || seals.length === 0) {
+            // Check legacy individual seal columns
+            const legacy = [gate.sealNumber1, gate.sealNumber2, gate.sealNumber3, gate.sealNumber4]
+                .filter((s) => s && String(s).trim() !== "");
+            if (legacy.length > 0) seals = legacy;
+        }
+        gate.sealNumbers = Array.isArray(seals) ? seals : [];
     }
+
     return { gate, weighbridge: weighbridgeResult[0] || null };
 };
 

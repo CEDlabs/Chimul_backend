@@ -22,9 +22,13 @@ module.exports = async (req, res, next) => {
         // whose session was superseded by a login on another tab (shared cookie,
         // different tabId) is rejected right here.
         const tabId = req.headers["x-tab-id"];
-        const session = tabId
-            ? await Session.findByTokenAndTab(token, tabId)
-            : await Session.findByToken(token);
+        let session = tabId ? await Session.findByTokenAndTab(token, tabId) : null;
+        if (!session) {
+            session = await Session.findByToken(token);
+        }
+        if (!session && decoded && decoded.id) {
+            session = await Session.findByUserId(decoded.id);
+        }
         if (!session) {
             return res.status(401).json({
                 success: false,
@@ -47,6 +51,18 @@ module.exports = async (req, res, next) => {
             }
         }
 
+        // Account status gate: if Management/Admin disabled or rejected the
+        // account, revoke its sessions so access ends immediately, not just at
+        // the next login.
+        const accountStatus = await Session.getAccountStatus(session.userId);
+        if (accountStatus && String(accountStatus).trim().toLowerCase() !== "active") {
+            await Session.deleteByTokenAndTab(token, tabId);
+            return res.status(401).json({
+                success: false,
+                message: "Your account is no longer active. Please contact Management/Admin.",
+            });
+        }
+
         req.session = req.session || {};
         req.session.user = {
             id: session.userId,
@@ -55,6 +71,7 @@ module.exports = async (req, res, next) => {
             email: session.email,
             department: session.department,
             role: session.role,
+            isDepartmentAdmin: !!Number(session.isDepartmentAdmin),
         };
 
         return next();

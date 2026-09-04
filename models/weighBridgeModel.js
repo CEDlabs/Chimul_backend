@@ -1,8 +1,25 @@
 const { connectDB, sql } = require("../config/db");
 const AuditLog = require("./auditLogModel");
+const AlternativeVehicle = require("./alternativeVehicleModel");
 
 const generateWBId = () =>
     `WB-${Date.now().toString().slice(-7)}-${Math.floor(100 + Math.random() * 900)}`;
+
+// Expand a searched vehicle number to include any alternative-vehicle partner(s) in
+// an active window today, so a weighbridge session recorded under either the primary
+// or the alternative plate is found no matter which one the operator types.
+async function expandVehicleNumbers(vehicleNumber, date) {
+    const vNum = String(vehicleNumber || "").trim().toUpperCase();
+    const numbers = new Set(vNum ? [vNum] : []);
+    if (!vNum) return [...numbers];
+
+    const alt = await AlternativeVehicle.findActiveForVehicle(vNum, date);
+    if (alt) {
+        if (alt.primaryVehicleNumber) numbers.add(String(alt.primaryVehicleNumber).toUpperCase());
+        if (alt.alternativeVehicleNumber) numbers.add(String(alt.alternativeVehicleNumber).toUpperCase());
+    }
+    return [...numbers];
+}
 
 async function ensureWBTable(pool) {
     try {
@@ -169,15 +186,19 @@ exports.saveTare = async (wbEntryId, tareWeight, mode) => {
 exports.findActive = async (vehicleNumber) => {
     const pool = await connectDB();
 
+    const numbers = await expandVehicleNumbers(vehicleNumber, new Date().toISOString().slice(0, 10));
+    if (numbers.length === 0) return null;
+    const placeholders = numbers.map(() => "?").join(",");
+
     const result = await pool.execute(
         `SELECT * FROM WeighBridgeEntries
-         WHERE vehicleNumber = ?
+         WHERE UPPER(vehicleNumber) IN (${placeholders})
            AND status IN ('Intermediate', 'TarePending')
            AND (isDeleted IS NULL OR isDeleted = 0)
            AND ${sql.date("createdAt")} = ${sql.curdate()}
          ORDER BY createdAt DESC
          LIMIT 1`,
-        [vehicleNumber.toUpperCase()]
+        numbers
     );
 
     return result[0] || null;
@@ -186,16 +207,20 @@ exports.findActive = async (vehicleNumber) => {
 exports.findTodayCompleted = async (vehicleNumber) => {
     const pool = await connectDB();
 
+    const numbers = await expandVehicleNumbers(vehicleNumber, new Date().toISOString().slice(0, 10));
+    if (numbers.length === 0) return null;
+    const placeholders = numbers.map(() => "?").join(",");
+
     const result = await pool.execute(
         `SELECT wbEntryId, vehicleNumber, grossWeight, tareWeight, netWeight, status, createdAt
          FROM WeighBridgeEntries
-         WHERE vehicleNumber = ?
+         WHERE UPPER(vehicleNumber) IN (${placeholders})
            AND status = 'Completed'
            AND (isDeleted IS NULL OR isDeleted = 0)
            AND ${sql.date("createdAt")} = ${sql.curdate()}
          ORDER BY createdAt DESC
          LIMIT 1`,
-        [vehicleNumber.toUpperCase()]
+        numbers
     );
 
     return result[0] || null;

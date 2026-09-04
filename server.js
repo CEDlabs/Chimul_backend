@@ -137,7 +137,8 @@
 // });
 
 
-require("dotenv").config();
+const path = require("path");
+require("dotenv").config({ path: path.resolve(__dirname, ".env") });
 
 const express = require("express");
 const helmet = require("helmet");
@@ -195,8 +196,8 @@ app.use(
    BODY PARSER
 ========================================================= */
 
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+app.use(express.json({ limit: "50mb" }));
+app.use(express.urlencoded({ limit: "50mb", extended: true }));
 
 /* =========================================================
    COOKIE PARSER
@@ -239,12 +240,14 @@ app.use((req, res, next) => {
 console.log("Mounting API routes...");
 
 app.use("/api/auth", require("./routes/authRoutes"));
+app.use("/api/users", require("./routes/userRoutes"));
 app.use("/api/gate-entry", require("./routes/gateEntryRoutes"));
 app.use("/api/waybridge", require("./routes/weighBridgeRoutes"));
 app.use("/api/sample-collection", require("./routes/sampleCollectionRoutes"));
 app.use("/api/milk-collection", require("./routes/milkCollectionRoutes"));
 app.use("/api/laboratory", require("./routes/laboratoryTestRoutes"));
 app.use("/api/vehicles", require("./routes/vehicleRoutes"));
+app.use("/api/routes", require("./routes/routeRoutes"));
 
 /* =========================================================
    HEALTH CHECK
@@ -275,6 +278,12 @@ app.use((req, res) => {
 
 app.use((err, req, res, next) => {
     console.error("Server Error:", err.message);
+    if (err.type === "entity.too.large" || err.status === 413) {
+        return res.status(413).json({
+            success: false,
+            message: "File or payload size is too large. Maximum allowed size is 50MB."
+        });
+    }
     if (err.message === "Not allowed by CORS") {
         return res.status(403).json({
             success: false,
@@ -293,8 +302,14 @@ app.use((err, req, res, next) => {
 
 const PORT = process.env.PORT || 5000;
 
-app.listen(PORT, "0.0.0.0", () => {
-    console.log(`Server running on port ${PORT}`);
-    console.log(`Local: http://localhost:${PORT}`);
-    console.log(`Network: http://YOUR_SERVER_IP:${PORT}`);
-});
+// Export the app without listening so it can be imported for tests/integration.
+// `node server.js` still starts the server exactly as before.
+if (require.main === module) {
+    app.listen(PORT, "0.0.0.0", () => {
+        console.log(`Server running on port ${PORT}`);
+        console.log(`Local: http://localhost:${PORT}`);
+        console.log(`Network: http://YOUR_SERVER_IP:${PORT}`);
+    });
+}
+
+module.exports = app;

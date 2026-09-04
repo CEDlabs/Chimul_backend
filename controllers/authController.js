@@ -34,6 +34,8 @@ const getUserPayload = (user) => ({
     phone: user.phone,
     department: user.department,
     role: user.role,
+    isDepartmentAdmin: !!Number(user.is_department_admin),
+    accountStatus: user.account_status || "active",
 });
 
 exports.register = async (req, res) => {
@@ -59,13 +61,18 @@ exports.register = async (req, res) => {
 
         const hashedPassword = await bcrypt.hash(password, 12);
 
+        // Newly self-registered accounts start as "pending" and can only log in
+        // after a Management/Admin approves them from the User Management page.
         await pool.execute(
-            `INSERT INTO employees (employee_id, employee_name, email, phone, department, password_hash, role)
-             VALUES (?, ?, ?, ?, ?, ?, ?)`,
+            `INSERT INTO employees (employee_id, employee_name, email, phone, department, password_hash, role, account_status)
+             VALUES (?, ?, ?, ?, ?, ?, ?, 'pending')`,
             [employeeId, employeeName, email, phone, dept, hashedPassword, dept]
         );
 
-        res.status(201).json({ success: true, message: "Registration successful" });
+        res.status(201).json({
+            success: true,
+            message: "Registration successful. Your account is pending approval by Management/Admin.",
+        });
     } catch (err) {
         console.error(err);
         res.status(500).json({ success: false, message: "Registration failed. Please try again." });
@@ -97,6 +104,21 @@ exports.login = async (req, res) => {
             return res.status(401).json({ success: false, message: "Invalid Email or Password" });
         }
 
+        // Account approval / enable-disable gate. Self-registered accounts must
+        // be approved first, and disabled/rejected accounts are locked out.
+        const accountStatus = String(user.account_status || "active").trim().toLowerCase();
+        if (accountStatus !== "active") {
+            const accountMessages = {
+                pending: "Your account is pending approval. Please wait for Management/Admin to approve it.",
+                disabled: "Your account has been disabled. Please contact Management/Admin.",
+                rejected: "Your registration was declined. Please contact Management/Admin.",
+            };
+            return res.status(403).json({
+                success: false,
+                message: accountMessages[accountStatus] || "Your account cannot log in. Please contact Management/Admin.",
+            });
+        }
+
         // SINGLE ACTIVE SESSION: any existing sessions for this user are revoked
         // (including tabs/other browsers), and the session version is bumped so
         // every previously-issued token is rejected by the auth middleware.
@@ -110,6 +132,7 @@ exports.login = async (req, res) => {
             email: user.email,
             department: user.department,
             role: user.role,
+            isDepartmentAdmin: !!Number(user.is_department_admin),
             sessionVersion,
         };
 
@@ -127,6 +150,7 @@ exports.login = async (req, res) => {
             email: user.email,
             department: user.department,
             role: user.role,
+            isDepartmentAdmin: !!Number(user.is_department_admin),
             token,
             tabId,
             ipAddress: req.ip || req.connection?.remoteAddress || null,
@@ -191,12 +215,31 @@ exports.profile = async (req, res) => {
 
         const decoded = jwt.verify(token, getJwtSecret());
         const tabId = req.headers["x-tab-id"];
-        const session = tabId
-            ? await Session.findByTokenAndTab(token, tabId)
-            : await Session.findByToken(token);
+        let session = tabId ? await Session.findByTokenAndTab(token, tabId) : null;
+        if (!session) session = await Session.findByToken(token);
+        if (!session && decoded && decoded.id) session = await Session.findByUserId(decoded.id);
+
         if (!session) {
             return res.status(401).json({ success: false, message: "Session expired. Please log in again." });
         }
+
+        // Renew cookie with new token on profile fetch so session stays alive on refresh
+        const newToken = jwt.sign(
+            { id: session.userId, employeeId: session.employeeId, email: session.email, department: session.department, role: session.role },
+            getJwtSecret(),
+            { expiresIn: "8h" }
+        );
+
+        // Synchronize updated token into Sessions table
+        await Session.updateToken(session.id, newToken).catch(() => {});
+
+        res.cookie(COOKIE_NAME, newToken, {
+            httpOnly: true,
+            secure: process.env.COOKIE_SECURE === "true",
+            sameSite: "lax",
+            path: "/",
+            maxAge: COOKIE_MAX_AGE_MS,
+        });
 
         return res.status(200).json({
             success: true,
@@ -207,6 +250,7 @@ exports.profile = async (req, res) => {
                 email: session.email,
                 department: session.department,
                 role: session.role,
+                isDepartmentAdmin: !!Number(session.isDepartmentAdmin),
             },
         });
     } catch (err) {

@@ -1,6 +1,8 @@
 const express = require("express");
 const router = express.Router();
 const { body } = require("express-validator");
+const authMiddleware = require("../middleware/authMiddleware");
+const { canManage } = require("../middleware/authorizeMiddleware");
 const gateEntryController = require("../controllers/gateEntryController");
 const vehicleExitController = require("../controllers/vehicleExitController");
 
@@ -19,8 +21,9 @@ router.get("/stats", gateEntryController.getGateStats);
 router.get("/recent", gateEntryController.getRecentGateEntries);
 router.get("/check-duplicates", gateEntryController.checkDuplicates);
 router.get("/by-vehicle-today/:vehicleNumber", gateEntryController.findByVehicleToday);
-router.put("/:id", gateEntryController.updateGateEntry);
-router.delete("/:id", gateEntryController.deleteGateEntry);
+// Only Admin/Management or the Gate (Security) department admin may edit/delete.
+router.put("/:id", authMiddleware, canManage(["security"]), gateEntryController.updateGateEntry);
+router.delete("/:id", authMiddleware, canManage(["security"]), gateEntryController.deleteGateEntry);
 
 // ── Audit Log Routes ────────────────────────────────────────────────
 router.get("/audit-log", gateEntryController.getAuditLogs);

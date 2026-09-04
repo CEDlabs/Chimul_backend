@@ -1,5 +1,6 @@
 const express = require("express");
 const authMiddleware = require("../middleware/authMiddleware");
+const { canManage } = require("../middleware/authorizeMiddleware");
 
 const router = express.Router();
 
@@ -117,7 +118,7 @@ router.put("/waybridge/tare/:wbEntryId", weighBridgeController.saveTare);
 router.get("/waybridge/active/:vehicleNumber", weighBridgeController.findActive);
 router.get("/waybridge/today-completed/:vehicleNumber", weighBridgeController.findTodayCompleted);
 router.get("/waybridge/records", weighBridgeController.getRecords);
-router.delete("/waybridge/:id", weighBridgeController.deleteEntry);
-router.put("/waybridge/:id", weighBridgeController.updateEntry);
+router.delete("/waybridge/:id", authMiddleware, canManage(["weighmenttracker"]), weighBridgeController.deleteEntry);
+router.put("/waybridge/:id", authMiddleware, canManage(["weighmenttracker"]), weighBridgeController.updateEntry);
 
 module.exports = router;

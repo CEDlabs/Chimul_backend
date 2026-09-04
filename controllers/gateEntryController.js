@@ -13,6 +13,19 @@ exports.createGateEntry = async (req, res) => {
             });
         }
 
+        if (Array.isArray(req.body.sealNumbers) && req.body.sealNumbers.length > 0) {
+            const invalid = req.body.sealNumbers
+                .map(s => String(s).trim())
+                .filter(s => s && !/^\d{6}$/.test(s));
+            if (invalid.length > 0) {
+                return res.status(400).json({
+                    success: false,
+                    message: `Seal numbers must be exactly 6 digits: ${invalid.join(", ")}`,
+                    invalidSeals: invalid,
+                });
+            }
+        }
+
         const result = await GateEntry.create(req.body);
 
         res.status(201).json({
@@ -100,6 +113,18 @@ exports.updateGateEntry = async (req, res) => {
         if (!id) {
             return res.status(400).json({ success: false, message: "Gate entry ID is required." });
         }
+        if (Array.isArray(req.body.sealNumbers) && req.body.sealNumbers.length > 0) {
+            const invalid = req.body.sealNumbers
+                .map(s => String(s).trim())
+                .filter(s => s && !/^\d{6}$/.test(s));
+            if (invalid.length > 0) {
+                return res.status(400).json({
+                    success: false,
+                    message: `Seal numbers must be exactly 6 digits: ${invalid.join(", ")}`,
+                    invalidSeals: invalid,
+                });
+            }
+        }
         const result = await GateEntry.update(id, req.body);
         res.json({ success: true, message: "Gate entry updated successfully.", data: result });
     } catch (err) {
@@ -165,7 +190,10 @@ exports.checkDuplicates = async (req, res) => {
             date
         });
 
-        const hasAnyDuplicate = result.duplicateVehicle || result.duplicateRouteVehicle || result.duplicateSeals.length > 0;
+        const hasAnyDuplicate = Boolean(
+            result.duplicateVehicle || result.duplicateRouteVehicle ||
+            result.duplicateSeals.length > 0 || result.invalidSeals.length > 0
+        );
 
         res.status(200).json({
             success: true,

@@ -1,6 +1,7 @@
 const express = require("express");
 const { body } = require("express-validator");
 const authMiddleware = require("../middleware/authMiddleware");
+const { canManage } = require("../middleware/authorizeMiddleware");
 const laboratoryTestController = require("../controllers/laboratoryTestController");
 const laboratoryReportController = require("../controllers/laboratoryReportController");
 
@@ -16,8 +17,9 @@ router.post(
     body("fat").trim().notEmpty(),
     laboratoryTestController.create
 );
-router.put("/:id", authMiddleware, laboratoryTestController.update);
-router.delete("/:id", authMiddleware, laboratoryTestController.remove);
+// Only Admin/Management or the Laboratory department admin may edit/delete.
+router.put("/:id", authMiddleware, canManage(["laboratory", "laboratory1"]), laboratoryTestController.update);
+router.delete("/:id", authMiddleware, canManage(["laboratory", "laboratory1"]), laboratoryTestController.remove);
 router.get("/find-existing", authMiddleware, laboratoryTestController.findExisting);
 router.get("/find-previous", authMiddleware, laboratoryTestController.findPreviousByVehicle);
 router.get("/vehicle/:vehicleNumber", authMiddleware, laboratoryTestController.getVehicleData);

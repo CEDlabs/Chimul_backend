@@ -1,5 +1,20 @@
 const { connectDB, sql } = require("../config/db");
 const AuditLog = require("./auditLogModel");
+const Vehicle = require("./vehicleModel");
+const AlternativeVehicle = require("./alternativeVehicleModel");
+const VehicleCatalog = require("./vehicleCatalogModel");
+
+const toDateStr = (v) => {
+    if (!v) return null;
+    if (v instanceof Date) {
+        if (isNaN(v.getTime())) return null;
+        const y = v.getFullYear();
+        const m = String(v.getMonth() + 1).padStart(2, "0");
+        const d = String(v.getDate()).padStart(2, "0");
+        return `${y}-${m}-${d}`;
+    }
+    return String(v).slice(0, 10);
+};
 
 const toDate = (value) => {
     if (!value) return null;
@@ -199,8 +214,58 @@ exports.getVehicleAndPrevious = async (vehicleNumber, reportDate) => {
         pool.execute(wbQuery, wbParams),
     ]);
 
-    const vehicle = vehicleRows[0] || null;
+    let vehicle = vehicleRows[0] || null;
     const weighbridge = wbRows[0] || null;
+
+    // Active alternative window → surface the effective (alternative) vehicle's
+    // seals/details while keeping the searched plate as the vehicle number.
+    const activeDateStr = dateStr || new Date().toISOString().slice(0, 10);
+    const altWindow = await AlternativeVehicle.findActiveForVehicle(normalizedVehicle, activeDateStr).catch(() => null);
+    if (altWindow) {
+        const altRec = (await Vehicle.findByNumberAndDate(altWindow.alternativeVehicleNumber, activeDateStr).catch(() => null))
+            || (await Vehicle.findByNumber(altWindow.alternativeVehicleNumber).catch(() => null));
+        const primRec = (await Vehicle.findByNumberAndDate(altWindow.primaryVehicleNumber, activeDateStr).catch(() => null))
+            || (await Vehicle.findByNumber(altWindow.primaryVehicleNumber).catch(() => null));
+        const altCatalog = (await VehicleCatalog.findByNumber(altWindow.primaryVehicleNumber).catch(() => null))
+            || (await VehicleCatalog.findByNumber(altWindow.alternativeVehicleNumber).catch(() => null));
+
+        vehicle = {
+            id: altRec?.id || null,
+            vehicleNumber: normalizedVehicle,
+            primaryVehicleNumber: altWindow.primaryVehicleNumber,
+            alternativeVehicleNumber: altWindow.alternativeVehicleNumber,
+            vehicleType: (altCatalog && altCatalog.vehicleType) || (altRec && altRec.vehicleType) || "Tanker",
+            routeName: altWindow.routeName,
+            allocationDate: toDateStr(altRec && altRec.allocationDate) || activeDateStr,
+            serialNumbers: (altRec && altRec.serialNumbers) || [],
+            alternativeVehicleSerials: (primRec && primRec.serialNumbers) || [],
+            retiredSerials: Array.from(new Set([
+                ...((altRec && altRec.retiredSerials) || []),
+                ...((primRec && primRec.retiredSerials) || []),
+            ])),
+            driverName: (altRec && altRec.driverName) || "",
+            driverMobile: (altRec && altRec.driverMobile) || "",
+            conductorName: (altRec && altRec.conductorName) || "",
+            destination: (altRec && altRec.destination) || "",
+            purpose: (altRec && altRec.purpose) || "",
+            isAlternative: true,
+            alternativeValidFrom: altWindow.fromDate,
+            alternativeValidTo: altWindow.toDate,
+        };
+    }
+
+    // Date-aware flag: if the top allocation is not on the exact target date
+    // (e.g. today), surface that so the frontend can warn the user.
+    if (vehicle && dateStr) {
+        const allocDateStr = toDateStr(vehicle.allocationDate);
+        vehicle.searchedDate = dateStr;
+        if (allocDateStr !== dateStr) {
+            vehicle.notAllocatedOnDate = true;
+            vehicle.allocatedOnDate = allocDateStr || null;
+        } else {
+            vehicle.notAllocatedOnDate = false;
+        }
+    }
 
     let reportId = null;
     if (dateStr) {

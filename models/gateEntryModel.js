@@ -257,7 +257,8 @@ exports.checkDuplicates = async ({ vehicleNumber, routeName, sealNumbers, date }
     const result = {
         duplicateVehicle: null,
         duplicateRouteVehicle: null,
-        duplicateSeals: []
+        duplicateSeals: [],
+        invalidSeals: []
     };
 
     const targetDate = date || new Date().toISOString().slice(0, 10);
@@ -296,21 +297,24 @@ exports.checkDuplicates = async ({ vehicleNumber, routeName, sealNumbers, date }
         }
     }
 
-    // 3. Check duplicate seal numbers (any seal already used today)
+    // 3. Check duplicate seal numbers - across ALL dates (a seal is never reused,
+    //    the day it was used on is shown as the usage detail)
     if (Array.isArray(sealNumbers) && sealNumbers.length > 0) {
         const filteredSeals = sealNumbers.filter(s => s && s.trim());
         for (const seal of filteredSeals) {
             const sRows = await pool.execute(
-                `SELECT gateEntryId, vehicleNumber, driverName, createdByName, createdByEmpId, sealNumbers, entryDateTime
+                `SELECT gateEntryId, vehicleNumber, driverName, createdByName, createdByEmpId, sealNumbers, entryDateTime, createdAt
                  FROM GateEntries
                  WHERE JSON_CONTAINS(sealNumbers, ?)
                    AND (isDeleted IS NULL OR isDeleted = 0)
-                   AND (DATE(createdAt) = ? OR (entryDateTime IS NOT NULL AND DATE(STR_TO_DATE(entryDateTime, '%d-%m-%Y %h:%i:%s %p')) = ?))
                  ORDER BY createdAt DESC LIMIT 1`,
-                [JSON.stringify(seal.trim()), targetDate, targetDate]
+                [JSON.stringify(seal.trim())]
             );
             if (sRows.length > 0) {
                 const existing = sRows[0];
+                const usedDate = existing.entryDateTime
+                    ? existing.entryDateTime
+                    : (existing.createdAt || "").toString().slice(0, 10);
                 result.duplicateSeals.push({
                     sealNumber: seal.trim(),
                     gateEntryId: existing.gateEntryId,
@@ -318,8 +322,19 @@ exports.checkDuplicates = async ({ vehicleNumber, routeName, sealNumbers, date }
                     driverName: existing.driverName,
                     allocatedBy: existing.createdByName || "Unknown",
                     allocatedByEmpId: existing.createdByEmpId || "",
-                    entryDateTime: existing.entryDateTime
+                    entryDateTime: existing.entryDateTime,
+                    usedDate,
                 });
+            }
+        }
+    }
+
+    // 4. 6-digit seal-number format validation
+    if (Array.isArray(sealNumbers) && sealNumbers.length > 0) {
+        for (const s of sealNumbers) {
+            const str = String(s).trim();
+            if (str && !/^\d{6}$/.test(str)) {
+                result.invalidSeals.push(str);
             }
         }
     }
