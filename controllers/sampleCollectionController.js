@@ -40,8 +40,8 @@ exports.create = async (req, res) => {
 
 exports.getAll = async (req, res) => {
     try {
-        const { vehicleNumber, startDate, endDate, search } = req.query;
-        const data = await SampleCollection.getAll({ vehicleNumber, startDate, endDate, search });
+        const { vehicleNumber, routeNo, startDate, endDate, search, utcOffsetMinutes } = req.query;
+        const data = await SampleCollection.getAll({ vehicleNumber, routeNo, startDate, endDate, search, utcOffsetMinutes });
         res.json({ success: true, count: data.length, data });
     } catch (error) {
         res.status(500).json({ success: false, message: error.message });
@@ -59,7 +59,11 @@ exports.getCompartments = async (req, res) => {
 
 exports.getByVehicleAndDate = async (req, res) => {
     try {
-        const data = await SampleCollection.getByVehicleAndDate(req.params.vehicleNumber, req.query.date);
+        const data = await SampleCollection.getByVehicleAndDate(
+            req.params.vehicleNumber,
+            req.query.date,
+            req.query.utcOffsetMinutes
+        );
         res.json({ success: true, data });
     } catch (error) {
         res.status(500).json({ success: false, message: error.message });

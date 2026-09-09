@@ -1,5 +1,6 @@
 const { connectDB, sql } = require("../config/db");
 const AuditLog = require("./auditLogModel");
+const { ensureSearchIndexes } = require("../utils/searchIndexes");
 
 async function ensureRoutesTable(pool) {
     try {
@@ -36,6 +37,7 @@ const normalizeRow = (row) => {
 exports.getAll = async () => {
     const pool = await connectDB();
     await ensureRoutesTable(pool);
+    await ensureSearchIndexes(pool);
 
     const rows = await pool.execute(
         `SELECT * FROM Routes

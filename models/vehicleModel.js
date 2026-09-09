@@ -1,4 +1,5 @@
 const { connectDB, sql } = require("../config/db");
+const { ensureSearchIndexes, syncVehicleSeals } = require("../utils/searchIndexes");
 
 async function ensureVehiclesTable(pool) {
     try {
@@ -114,6 +115,7 @@ exports.findByNumber = async (vehicleNumber) => {
     await ensureVehiclesTable(pool);
     await ensureAuditColumns(pool);
     await ensureVehicleDataColumns(pool);
+    await ensureSearchIndexes(pool);
 
     const vNum = (vehicleNumber || "").toUpperCase().trim();
     const rows = await pool.execute(
@@ -129,6 +131,7 @@ exports.getAll = async () => {
     await ensureVehiclesTable(pool);
     await ensureAuditColumns(pool);
     await ensureVehicleDataColumns(pool);
+    await ensureSearchIndexes(pool);
 
     const rows = await pool.execute(
         "SELECT * FROM Vehicles WHERE (isDeleted IS NULL OR isDeleted = 0) ORDER BY allocationDate DESC, vehicleNumber ASC"
@@ -218,65 +221,29 @@ exports.checkDuplicates = async ({ vehicleNumber, primaryVehicleNumber, routeNam
         }
 
         // B. Check against existing database records across ALL dates
+        //    Uses the indexed VehicleSeals lookup table for exact & fast matches.
         for (const serial of filtered) {
             const serialStr = String(serial).trim();
-            const jsonSearch = JSON.stringify(serialStr);
+            const sRows = await pool.execute(
+                `SELECT vs.sealNumber, vs.sealStatus, v.vehicleNumber, v.routeName, v.allocationDate
+                 FROM VehicleSeals vs
+                 LEFT JOIN Vehicles v ON v.id = vs.vehicleId
+                 WHERE vs.sealNumber = ?
+                 ORDER BY vs.allocationDate DESC, vs.id DESC
+                 LIMIT 1`,
+                [serialStr]
+            ).catch(() => []);
 
-            // Query using JSON_CONTAINS with LIKE pattern fallback
-            let sQuery = `SELECT id, vehicleNumber, routeName, allocationDate, serialNumbers, retiredSerials, createdByName, createdByEmpId
-                 FROM Vehicles
-                 WHERE (
-                    (serialNumbers IS NOT NULL AND (JSON_CONTAINS(serialNumbers, ?) OR serialNumbers LIKE ?))
-                    OR
-                    (retiredSerials IS NOT NULL AND (JSON_CONTAINS(retiredSerials, ?) OR retiredSerials LIKE ?))
-                 )
-                 AND (isDeleted IS NULL OR isDeleted = 0)`;
-            const likePattern = `%${jsonSearch}%`;
-            const sParams = [jsonSearch, likePattern, jsonSearch, likePattern];
-
-            if (excludeId) {
-                sQuery += ` AND id != ?`;
-                sParams.push(parseInt(excludeId, 10));
-            }
-            sQuery += ` ORDER BY allocationDate DESC, createdAt DESC LIMIT 1`;
-
-            try {
-                const sRows = await pool.execute(sQuery, sParams);
-                if (sRows.length > 0) {
-                    const existing = normalizeVehicle(sRows[0]);
-                    if (!result.duplicateSerials.some(d => d.serialNumber === serialStr)) {
-                        result.duplicateSerials.push({
-                            serialNumber: serialStr,
-                            vehicleNumber: existing.vehicleNumber,
-                            routeName: existing.routeName,
-                            allocationDate: existing.allocationDate,
-                            retired: (existing.retiredSerials || []).includes(serialStr),
-                        });
-                    }
-                }
-            } catch (err) {
-                let fbQuery = `SELECT id, vehicleNumber, routeName, allocationDate, serialNumbers, retiredSerials, createdByName, createdByEmpId
-                     FROM Vehicles
-                     WHERE (serialNumbers LIKE ? OR retiredSerials LIKE ?)
-                       AND (isDeleted IS NULL OR isDeleted = 0)`;
-                const fbParams = [likePattern, likePattern];
-                if (excludeId) {
-                    fbQuery += ` AND id != ?`;
-                    fbParams.push(parseInt(excludeId, 10));
-                }
-                fbQuery += ` ORDER BY allocationDate DESC, createdAt DESC LIMIT 1`;
-                const fbRows = await pool.execute(fbQuery, fbParams);
-                if (fbRows.length > 0) {
-                    const existing = normalizeVehicle(fbRows[0]);
-                    if (!result.duplicateSerials.some(d => d.serialNumber === serialStr)) {
-                        result.duplicateSerials.push({
-                            serialNumber: serialStr,
-                            vehicleNumber: existing.vehicleNumber,
-                            routeName: existing.routeName,
-                            allocationDate: existing.allocationDate,
-                            retired: (existing.retiredSerials || []).includes(serialStr),
-                        });
-                    }
+            if (sRows && sRows.length > 0) {
+                const existing = sRows[0];
+                if (!result.duplicateSerials.some(d => d.serialNumber === serialStr)) {
+                    result.duplicateSerials.push({
+                        serialNumber: serialStr,
+                        vehicleNumber: existing.vehicleNumber,
+                        routeName: existing.routeName,
+                        allocationDate: existing.allocationDate,
+                        retired: existing.sealStatus === "RETIRED",
+                    });
                 }
             }
         }
@@ -317,6 +284,7 @@ exports.register = async (data) => {
     await ensureVehiclesTable(pool);
     await ensureAuditColumns(pool);
     await ensureVehicleDataColumns(pool);
+    await ensureSearchIndexes(pool);
 
     const vehicleNumber = (data.vehicleNumber || "").toUpperCase().trim();
 
@@ -528,6 +496,19 @@ exports.register = async (data) => {
             action = "created";
         }
 
+        // Keep the indexed VehicleSeals lookup in sync with the JSON columns.
+        const activeSerialList = hasSerialNumbers
+            ? (JSON.parse(serialNumbersJson || "[]") || [])
+            : [];
+        const retiredSerialList = Array.isArray(retiredNext) ? retiredNext : [];
+        await syncVehicleSeals(conn, {
+            vehicleId: newId,
+            vehicleNumber,
+            allocationDate: allocationDate.toISOString().slice(0, 10),
+            activeSerials: activeSerialList,
+            retiredSerials: retiredSerialList,
+        });
+
         await conn.commit();
         console.log(`[Vehicles] ${action} master vehicle: ${vehicleNumber} on ${allocationDate.toISOString().slice(0, 10)} by ${name || "unknown"}`);
 
@@ -558,6 +539,7 @@ exports.listAllocatedRoutes = async (date) => {
     await ensureVehiclesTable(pool);
     await ensureAuditColumns(pool);
     await ensureVehicleDataColumns(pool);
+    await ensureSearchIndexes(pool);
 
     const targetDate = date || new Date().toISOString().slice(0, 10);
     const rows = await pool.execute(
@@ -574,6 +556,7 @@ exports.findPrimaryByRoute = async (routeName, date) => {
     await ensureVehiclesTable(pool);
     await ensureAuditColumns(pool);
     await ensureVehicleDataColumns(pool);
+    await ensureSearchIndexes(pool);
 
     const rows = await pool.execute(
         `SELECT * FROM Vehicles
@@ -590,6 +573,7 @@ exports.findByNumberAndDate = async (vehicleNumber, date) => {
     await ensureVehiclesTable(pool);
     await ensureAuditColumns(pool);
     await ensureVehicleDataColumns(pool);
+    await ensureSearchIndexes(pool);
 
     const rows = await pool.execute(
         `SELECT * FROM Vehicles

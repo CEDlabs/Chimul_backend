@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Chimul Milk Plant - Relational Table & ER Diagram</title>
+<script type="module">
+  import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.esm.min.mjs';
+  mermaid.initialize({ startOnLoad: true, theme: 'default' });
+</script>
+<style>
+  body { font-family: "Segoe UI", Arial, sans-serif; margin: 24px; background: #f7f9fc; color: #222; }
+  h1 { color: #0b5cad; }
+  h2 { color: #0b5cad; border-bottom: 2px solid #0b5cad; padding-bottom: 4px; margin-top: 40px; }
+  .stage { background: #fff; border: 1px solid #d0d7de; border-radius: 8px; padding: 16px 20px; margin: 14px 0; }
+  table { border-collapse: collapse; width: 100%; background: #fff; }
+  th, td { border: 1px solid #d0d7de; padding: 8px 12px; text-align: left; font-size: 14px; }
+  th { background: #eef4fb; }
+  code, .mono { font-family: "Cascadia Code", Consolas, monospace; }
+  .pk { color: #0b5cad; font-weight: 700; }
+  .fk { color: #b7410e; font-weight: 700; }
+  .uk { color: #2e7d32; font-weight: 700; }
+  .flow { background: #fffbe6; border: 1px dashed #d4a017; border-radius: 8px; padding: 14px 18px; margin: 14px 0; }
+</style>
+</head>
+<body>
+<h1>Chimul Milk Plant — Relational Table &amp; Key Mapping</h1>
+
+<div class="flow">
+  <strong>Data Flow (Common Data Mapping):</strong><br/>
+  <span class="mono">
+  [1] Lab Vehicle Master → Route Alternative → Vehicles<br/>
+  &nbsp;&nbsp;&nbsp;&nbsp;common key: <b>vehicleNumber + routeName</b><br/>
+  &nbsp;&nbsp;&nbsp;&nbsp;&darr;<br/>
+  [2] <b>Gate Entry</b> &nbsp;(uses Stage 1 master)<br/>
+  &nbsp;&nbsp;&nbsp;&nbsp;common key: <b>vehicleNumber + routeName</b><br/>
+  &nbsp;&nbsp;&nbsp;&nbsp;&darr;<br/>
+  [3] <b>Weightment / WeighBridge</b> &nbsp;(uses Gate data)<br/>
+  &nbsp;&nbsp;&nbsp;&nbsp;common key: <b>vehicleNumber + routeName</b><br/>
+  &nbsp;&nbsp;&nbsp;&nbsp;&darr;<br/>
+  [4] <b>Sample Collection</b> &nbsp;|&nbsp; <b>Truck Sheet</b> &nbsp;|&nbsp; <b>Lab Calculation</b><br/>
+  &nbsp;&nbsp;&nbsp;&nbsp;common key: <b>wbEntryId / gateEntryId / vehicleNumber + routeName</b>
+  </span>
+</div>
+
+<h2>Graphical ER Diagram</h2>
+<div class="mermaid">
+erDiagram
+  VehicleCatalog ||--o{ RouteAlternativeVehicles : "primaryVehicleNumber"
+  VehicleCatalog ||--o{ RouteAlternativeVehicles : "alternativeVehicleNumber"
+  VehicleCatalog ||--o{ Vehicles : "vehicleNumber"
+  VehicleCatalog ||--o{ GateEntries : "vehicleNumber"
+  Routes ||--o{ VehicleCatalog : "routeName"
+
+  GateEntries ||--o{ WeighBridgeEntries : "vehicleNumber, routeName"
+  WeighBridgeEntries ||--o{ SampleCollections : "wbEntryId"
+  WeighBridgeEntries ||--o{ LaboratoryTests : "wbEntryId"
+  GateEntries ||--o{ SampleCollections : "gateEntryId"
+  GateEntries ||--o{ LaboratoryTests : "gateEntryId"
+  SampleCollections ||--o{ SampleCompartmentTests : "sampleId"
+  LaboratoryTests ||--o{ LaboratoryCompartmentTests : "labTestId"
+
+  Routes {
+    INT id PK
+    VARCHAR routeName UK
+    VARCHAR taluk
+  }
+  VehicleCatalog {
+    INT id PK
+    VARCHAR vehicleNumber UK "LAB MASTER"
+    VARCHAR routeName FK
+    VARCHAR vehicleType
+  }
+  RouteAlternativeVehicles {
+    INT id PK
+    VARCHAR routeName FK
+    VARCHAR primaryVehicleNumber FK
+    VARCHAR alternativeVehicleNumber FK
+    DATE fromDate
+    DATE toDate
+  }
+  Vehicles {
+    INT id PK
+    VARCHAR vehicleNumber FK
+    VARCHAR routeName FK
+    DATE allocationDate
+    JSON serialNumbers
+    JSON retiredSerials
+  }
+  GateEntries {
+    INT id PK
+    VARCHAR gateEntryId UK
+    VARCHAR vehicleNumber FK
+    VARCHAR routeName FK
+    VARCHAR sealStatus
+    JSON sealNumbers
+  }
+  WeighBridgeEntries {
+    INT id PK
+    VARCHAR wbEntryId UK
+    VARCHAR vehicleNumber FK
+    VARCHAR routeName FK
+    DECIMAL grossWeight
+    DECIMAL tareWeight
+    DECIMAL netWeight
+  }
+  SampleCollections {
+    INT id PK
+    VARCHAR sampleId UK
+    VARCHAR vehicleNumber FK
+    VARCHAR gateEntryId FK
+    VARCHAR wbEntryId FK
+    VARCHAR routeNo FK
+  }
+  SampleCompartmentTests {
+    INT id PK
+    VARCHAR sampleId FK
+    VARCHAR compartment
+  }
+  MilkCollections {
+    INT id PK
+    VARCHAR reportId UK
+    VARCHAR vehicleNumber FK
+    VARCHAR routeNo FK
+    DECIMAL eveningKg
+    DECIMAL morningKg
+  }
+  LaboratoryTests {
+    INT id PK
+    VARCHAR labTestId UK
+    VARCHAR vehicleNumber FK
+    VARCHAR routeNo FK
+    VARCHAR gateEntryId FK
+    VARCHAR wbEntryId FK
+    VARCHAR snf
+  }
+  LaboratoryCompartmentTests {
+    INT id PK
+    VARCHAR labTestId FK
+    VARCHAR compartment
+  }
+</div>
+
+<h2>Stage 1 — Lab Vehicle Master → Route Alternative → Vehicles</h2>
+<div class="stage">
+<table>
+  <tr><th>Table</th><th>Primary Key (PK)</th><th>Natural / Unique Key</th><th>Foreign Key (FK) → Referenced</th><th>Role</th></tr>
+  <tr><td>Routes</td><td class="pk">id</td><td class="uk">routeName</td><td>—</td><td>Master route list</td></tr>
+  <tr><td>VehicleCatalog</td><td class="pk">id</td><td class="uk">vehicleNumber</td><td class="fk">routeName → Routes.routeName</td><td>Lab vehicle master (fleet)</td></tr>
+  <tr><td>RouteAlternativeVehicles</td><td class="pk">id</td><td>—</td><td class="fk">routeName → Routes.routeName; primaryVehicleNumber &amp; alternativeVehicleNumber → VehicleCatalog.vehicleNumber</td><td>Alternative vehicle window</td></tr>
+  <tr><td>Vehicles</td><td class="pk">id</td><td class="uk">(vehicleNumber, allocationDate)</td><td class="fk">vehicleNumber → VehicleCatalog.vehicleNumber; routeName → Routes.routeName</td><td>Daily seal allocation</td></tr>
+</table>
+</div>
+
+<h2>Stage 2 — Gate Entry</h2>
+<div class="stage">
+<table>
+  <tr><th>Table</th><th>Primary Key (PK)</th><th>Business Key</th><th>Foreign Key (FK) → Referenced</th><th>Source</th></tr>
+  <tr><td>GateEntries</td><td class="pk">id</td><td class="uk">gateEntryId</td><td class="fk">vehicleNumber → VehicleCatalog.vehicleNumber; routeName → Routes.routeName</td><td>Uses Stage 1 master</td></tr>
+</table>
+</div>
+
+<h2>Stage 3 — Weightment</h2>
+<div class="stage">
+<table>
+  <tr><th>Table</th><th>Primary Key (PK)</th><th>Business Key</th><th>Foreign Key (FK) → Referenced</th><th>Source</th></tr>
+  <tr><td>WeighBridgeEntries</td><td class="pk">id</td><td class="uk">wbEntryId</td><td class="fk">vehicleNumber → VehicleCatalog.vehicleNumber; routeName → Routes.routeName</td><td>Uses Gate data (vehicleNumber, routeName)</td></tr>
+</table>
+</div>
+
+<h2>Stage 4 — Sample Collection | Truck Sheet | Lab Calculation</h2>
+<div class="stage">
+<table>
+  <tr><th>Table</th><th>Primary Key (PK)</th><th>Business Key</th><th>Foreign Key (FK) → Referenced</th><th>Source</th></tr>
+  <tr><td>SampleCollections</td><td class="pk">id</td><td class="uk">sampleId</td><td class="fk">vehicleNumber → VehicleCatalog; gateEntryId → GateEntries; wbEntryId → WeighBridgeEntries; routeNo → Routes</td><td>Uses Weightment + Gate</td></tr>
+  <tr><td>SampleCompartmentTests</td><td class="pk">id</td><td>—</td><td class="fk">sampleId → SampleCollections.sampleId</td><td>Child of Sample</td></tr>
+  <tr><td>MilkCollections</td><td class="pk">id</td><td class="uk">reportId</td><td class="fk">vehicleNumber → VehicleCatalog; routeNo → Routes</td><td>Truck sheet uses Weightment</td></tr>
+  <tr><td>LaboratoryTests</td><td class="pk">id</td><td class="uk">labTestId</td><td class="fk">vehicleNumber → VehicleCatalog; routeNo → Routes; gateEntryId → GateEntries; wbEntryId → WeighBridgeEntries</td><td>Lab calc uses Weightment + Sample</td></tr>
+  <tr><td>LaboratoryCompartmentTests</td><td class="pk">id</td><td>—</td><td class="fk">labTestId → LaboratoryTests.labTestId</td><td>Child of Lab test</td></tr>
+</table>
+</div>
+
+<p style="margin-top:30px;color:#666;font-size:12px;">
+  Primary keys shown in <span class="pk">blue</span>, foreign keys in <span class="fk">orange</span>,
+  unique/business keys in <span class="uk">green</span>. Relationship cardinality is 1&#8594;many.
+</p>
+</body>
+</html>

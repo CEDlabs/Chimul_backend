@@ -3,6 +3,8 @@ const AuditLog = require("./auditLogModel");
 const Vehicle = require("./vehicleModel");
 const AlternativeVehicle = require("./alternativeVehicleModel");
 const VehicleCatalog = require("./vehicleCatalogModel");
+const RouteMember = require("./routeMemberModel");
+const { ensureSearchIndexes } = require("../utils/searchIndexes");
 
 const toDateStr = (v) => {
     if (!v) return null;
@@ -77,6 +79,7 @@ exports.saveReport = async (data) => {
     const pool = await connectDB();
     await ensureTable(pool);
     await ensureSoftDeleteColumns(pool);
+    await ensureSearchIndexes(pool);
 
     const reportDate = toDate(data.reportDate);
     const vehicleNumber = clamp(data.vehicleNumber, 20).toUpperCase().trim();
@@ -184,9 +187,9 @@ exports.getDates = async (vehicleNumber) => {
 
 exports.getVehicleAndPrevious = async (vehicleNumber, reportDate) => {
     const pool = await connectDB();
-    await ensureTable(pool);
+    await ensureSearchIndexes(pool);
     const normalizedVehicle = String(vehicleNumber || "").toUpperCase().trim();
-    if (!normalizedVehicle) return { vehicle: null, route: null, previousMembers: [] };
+    if (!normalizedVehicle) return { vehicle: null, route: null, previousMembers: [], routeMembers: [] };
 
     const targetDate = toDate(reportDate);
     const dateStr = targetDate ? targetDate.toISOString().slice(0, 10) : null;
@@ -295,11 +298,21 @@ exports.getVehicleAndPrevious = async (vehicleNumber, reportDate) => {
         previousMembers = members;
     }
 
+    // Default member rows come from the Route Members master list. When a saved
+    // report already exists its members win; otherwise the route's master list
+    // members pre-fill the report so the user only has to add what's missing.
+    let routeMembers = [];
+    const effectiveRoute = vehicle?.routeName || weighbridge?.routeName || "";
+    if (!previousMembers.length && effectiveRoute) {
+        routeMembers = await RouteMember.getByRoute(effectiveRoute).catch(() => []);
+    }
+
     return {
         vehicle,
         weighbridge,
-        route: vehicle?.routeName || weighbridge?.routeName || "",
+        route: effectiveRoute,
         previousMembers,
+        routeMembers,
         reportId: reportId || null,
     };
 };

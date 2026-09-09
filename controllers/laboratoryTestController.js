@@ -107,8 +107,10 @@ exports.getAll = async (req, res) => {
 
 exports.getVehicleData = async (req, res) => {
     try {
-        const data = await LaboratoryTest.getVehicleData(req.params.vehicleNumber);
-        res.json({ success: true, data, found: Boolean(data.gate || data.weighbridge) });
+        const date = req.query.date ? String(req.query.date).slice(0, 10) : null;
+        const data = await LaboratoryTest.getVehicleData(req.params.vehicleNumber, date);
+        const found = Boolean(data.gate || data.weighbridge || data.sampleCollection || (data.sealNumbers && data.sealNumbers.length > 0));
+        res.json({ success: true, data, found });
     } catch (error) {
         res.status(500).json({ success: false, message: error.message });
     }
@@ -116,8 +118,10 @@ exports.getVehicleData = async (req, res) => {
 
 exports.getDataByRoute = async (req, res) => {
     try {
-        const data = await LaboratoryTest.getDataByRoute(req.query.routeNo);
-        res.json({ success: true, data, found: Boolean(data.weighbridge || data.gate) });
+        const date = req.query.date ? String(req.query.date).slice(0, 10) : null;
+        const data = await LaboratoryTest.getDataByRoute(req.query.routeNo, date);
+        const found = Boolean(data.weighbridge || data.gate || data.sampleCollection || (data.vehicles && data.vehicles.length > 0) || (data.sealNumbers && data.sealNumbers.length > 0));
+        res.json({ success: true, data, found });
     } catch (error) {
         res.status(500).json({ success: false, message: error.message });
     }

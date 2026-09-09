@@ -1,4 +1,5 @@
 const { connectDB } = require("../config/db");
+const { ensureSearchIndexes, normalizePlate } = require("../utils/searchIndexes");
 
 async function ensureExitColumnsExist(pool) {
     try {
@@ -111,16 +112,17 @@ exports.recordExit = async (data) => {
 
 exports.searchActive = async (vehicleNumber) => {
     const pool = await connectDB();
+    await ensureSearchIndexes(pool);
 
     const result = await pool.execute(
         `SELECT id, gateEntryId, vehicleNumber, vehicleType, driverName, driverMobile,
                 supplierName, materialType, vehicleStatus, entryDateTime, createdAt
          FROM GateEntries
-         WHERE vehicleNumber LIKE ?
+         WHERE (vehKey LIKE CONCAT(?, '%') OR UPPER(vehicleNumber) LIKE CONCAT(?, '%'))
            AND (exitDateTime IS NULL AND (exitStatus IS NULL OR exitStatus != 'Gate Exited'))
          ORDER BY createdAt DESC, id DESC
          LIMIT 5`,
-        [`%${vehicleNumber}%`]
+        [normalizePlate(vehicleNumber), String(vehicleNumber || "").toUpperCase()]
     );
 
     return result;
@@ -128,6 +130,7 @@ exports.searchActive = async (vehicleNumber) => {
 
 exports.getExitRecords = async ({ startDate, endDate, search } = {}) => {
     const pool = await connectDB();
+    await ensureSearchIndexes(pool);
 
     let query = `
         SELECT
@@ -147,9 +150,11 @@ exports.getExitRecords = async ({ startDate, endDate, search } = {}) => {
     }
 
     if (search && search.trim()) {
-        query += ` AND (ve.vehicleNumber LIKE ? OR ve.gateEntryId LIKE ? OR ge.driverName LIKE ? OR ge.supplierName LIKE ?)`;
-        const s = `%${search.trim()}%`;
-        params.push(s, s, s, s);
+        const term = String(search).trim();
+        const key = normalizePlate(term);
+        const prefix = term.toUpperCase();
+        query += ` AND (ve.vehKey LIKE CONCAT(?, '%') OR ve.gateEntryId LIKE CONCAT(?, '%'))`;
+        params.push(key, prefix);
     }
 
     query += ` ORDER BY ve.exitDateTime DESC, ve.id DESC`;

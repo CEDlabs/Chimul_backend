@@ -1,0 +1,110 @@
+{
+  "schema": "Chimul Milk Plant - Relational Table Mapping",
+  "stages": [
+    {
+      "stage": 1,
+      "name": "Lab Vehicle Master Data",
+      "commonKeys": ["vehicleNumber", "routeName"],
+      "tables": ["Routes", "VehicleCatalog", "RouteAlternativeVehicles", "Vehicles"]
+    },
+    {
+      "stage": 2,
+      "name": "Gate Entry",
+      "commonKeys": ["vehicleNumber", "routeName"],
+      "source": "STAGE 1 master data",
+      "tables": ["GateEntries"]
+    },
+    {
+      "stage": 3,
+      "name": "Weightment",
+      "commonKeys": ["vehicleNumber", "routeName"],
+      "source": "STAGE 2 gate data",
+      "tables": ["WeighBridgeEntries"]
+    },
+    {
+      "stage": 4,
+      "name": "Sample Collection | Truck Sheet | Lab Calculation",
+      "commonKeys": ["vehicleNumber", "routeName", "gateEntryId", "wbEntryId"],
+      "source": "STAGE 3 weighment + STAGE 1 master",
+      "tables": ["SampleCollections", "SampleCompartmentTests", "MilkCollections", "LaboratoryTests", "LaboratoryCompartmentTests"]
+    }
+  ],
+  "tables": {
+    "Routes": {
+      "pk": "id",
+      "naturalKey": "routeName",
+      "referencedBy": ["VehicleCatalog.routeName", "RouteAlternativeVehicles.routeName", "Vehicles.routeName", "GateEntries.routeName", "WeighBridgeEntries.routeName", "SampleCollections.routeNo", "MilkCollections.routeNo", "LaboratoryTests.routeNo"]
+    },
+    "VehicleCatalog": {
+      "label": "Lab Vehicle Master",
+      "pk": "id",
+      "naturalKey": "vehicleNumber",
+      "fk": { "routeName": "Routes.routeName" },
+      "referencedBy": ["RouteAlternativeVehicles.primaryVehicleNumber", "RouteAlternativeVehicles.alternativeVehicleNumber", "Vehicles.vehicleNumber", "GateEntries.vehicleNumber", "WeighBridgeEntries.vehicleNumber", "SampleCollections.vehicleNumber", "MilkCollections.vehicleNumber", "LaboratoryTests.vehicleNumber"]
+    },
+    "RouteAlternativeVehicles": {
+      "pk": "id",
+      "fk": {
+        "routeName": "Routes.routeName",
+        "primaryVehicleNumber": "VehicleCatalog.vehicleNumber",
+        "alternativeVehicleNumber": "VehicleCatalog.vehicleNumber"
+      }
+    },
+    "Vehicles": {
+      "label": "Daily seal allocation",
+      "pk": "id",
+      "fk": { "vehicleNumber": "VehicleCatalog.vehicleNumber", "routeName": "Routes.routeName" }
+    },
+    "GateEntries": {
+      "label": "Stage 2 - Gate Entry",
+      "pk": "id",
+      "businessKey": "gateEntryId",
+      "fk": { "vehicleNumber": "VehicleCatalog.vehicleNumber", "routeName": "Routes.routeName" },
+      "referencedBy": ["WeighBridgeEntries(by vehicleNumber, routeName)", "SampleCollections.gateEntryId", "LaboratoryTests.gateEntryId"]
+    },
+    "WeighBridgeEntries": {
+      "label": "Stage 3 - Weightment",
+      "pk": "id",
+      "businessKey": "wbEntryId",
+      "fk": { "vehicleNumber": "VehicleCatalog.vehicleNumber", "routeName": "Routes.routeName" },
+      "source": "GateEntries (vehicleNumber, routeName)",
+      "referencedBy": ["SampleCollections.wbEntryId", "LaboratoryTests.wbEntryId"]
+    },
+    "SampleCollections": {
+      "label": "Stage 4 - Sample Collection",
+      "pk": "id",
+      "businessKey": "sampleId",
+      "fk": {
+        "vehicleNumber": "VehicleCatalog.vehicleNumber",
+        "gateEntryId": "GateEntries.gateEntryId",
+        "wbEntryId": "WeighBridgeEntries.wbEntryId",
+        "routeNo": "Routes.routeName"
+      }
+    },
+    "SampleCompartmentTests": {
+      "pk": "id",
+      "fk": { "sampleId": "SampleCollections.sampleId" }
+    },
+    "MilkCollections": {
+      "label": "Stage 4 - Truck Sheet",
+      "pk": "id",
+      "businessKey": "reportId",
+      "fk": { "vehicleNumber": "VehicleCatalog.vehicleNumber", "routeNo": "Routes.routeName" }
+    },
+    "LaboratoryTests": {
+      "label": "Stage 4 - Lab Calculation",
+      "pk": "id",
+      "businessKey": "labTestId",
+      "fk": {
+        "vehicleNumber": "VehicleCatalog.vehicleNumber",
+        "routeNo": "Routes.routeName",
+        "gateEntryId": "GateEntries.gateEntryId",
+        "wbEntryId": "WeighBridgeEntries.wbEntryId"
+      }
+    },
+    "LaboratoryCompartmentTests": {
+      "pk": "id",
+      "fk": { "labTestId": "LaboratoryTests.labTestId" }
+    }
+  }
+}
