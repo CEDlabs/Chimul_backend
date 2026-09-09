@@ -1,5 +1,23 @@
 const { connectDB, sql } = require("../config/db");
 const AuditLog = require("./auditLogModel");
+const { ensureSearchIndexes, syncGateSeals, markGateSealsDeleted, freeText, normalizePlate } = require("../utils/searchIndexes");
+
+const nextDay = (isoDate) => {
+    const d = new Date(`${isoDate}T00:00:00Z`);
+    d.setUTCDate(d.getUTCDate() + 1);
+    return d.toISOString().slice(0, 10);
+};
+
+/* Index-friendly date filter for GateEntries:
+   - createdAt is DATETIME  -> range scan on idx_ge_created
+   - entryDateTime is TEXT  -> generated entryDt DATE column (idx_ge_entrydt) */
+const dateRangeClause = (alias) => {
+    const p = alias ? `${alias}.` : "";
+    return `((${p}createdAt >= ? AND ${p}createdAt < ?) OR (${p}entryDt IS NOT NULL AND ${p}entryDt >= ? AND ${p}entryDt <= ?))`;
+};
+
+const sameDayClause = () =>
+    `(createdAt >= ? AND createdAt < ? OR (entryDt IS NOT NULL AND entryDt = ?))`;
 
 const ensureRouteColumn = async (pool) => {
     try {
@@ -88,6 +106,7 @@ exports.create = async (data) => {
     const pool = await connectDB();
     await ensureRouteColumn(pool);
     await ensureCreatedByDetailColumns(pool);
+    await ensureSearchIndexes(pool);
 
     const tyreVal = parseInt(data.tyre, 10) || 0;
     const jackVal = parseInt(data.jack, 10) || 0;
@@ -141,6 +160,18 @@ exports.create = async (data) => {
         ]
     );
 
+    let parsedSeals = [];
+    if (Array.isArray(data.sealNumbers)) parsedSeals = data.sealNumbers;
+    else if (typeof data.sealNumbers === "string") {
+        try { parsedSeals = JSON.parse(data.sealNumbers); } catch { parsedSeals = []; }
+    }
+    await syncGateSeals(pool, {
+        gateEntryId: data.gateEntryId,
+        vehicleNumber: data.vehicleNumber,
+        sealNumbers: parsedSeals,
+        entryDateTime: entryDate,
+    });
+
     return data;
 };
 
@@ -151,6 +182,7 @@ exports.getAll = async ({ startDate, endDate, search } = {}) => {
     await ensureRouteColumn(pool);
     await ensureSoftDeleteColumns(pool);
     await ensureCreatedByDetailColumns(pool);
+    await ensureSearchIndexes(pool);
 
     let query = `
         SELECT
@@ -165,21 +197,30 @@ exports.getAll = async ({ startDate, endDate, search } = {}) => {
         WHERE 1 = 1 AND (ge.isDeleted IS NULL OR ge.isDeleted = 0)
     `;
     const params = [];
+    let ft = null;
 
     if (startDate && endDate) {
-        query += ` AND (DATE(ge.createdAt) >= ? AND DATE(ge.createdAt) <= ? OR (ge.entryDateTime IS NOT NULL AND DATE(STR_TO_DATE(ge.entryDateTime, '%d-%m-%Y %h:%i:%s %p')) >= ? AND DATE(STR_TO_DATE(ge.entryDateTime, '%d-%m-%Y %h:%i:%s %p')) <= ?))`;
-        params.push(startDate, endDate, startDate, endDate);
+        query += ` AND ${dateRangeClause("ge")}`;
+        params.push(`${startDate}T00:00:00`, `${nextDay(endDate)}T00:00:00`, startDate, endDate);
     }
 
     if (search && search.trim()) {
-        query += ` AND (ge.gateEntryId LIKE ? OR ge.vehicleNumber LIKE ? OR ge.driverName LIKE ? OR ge.supplierName LIKE ? OR ge.materialType LIKE ? OR ge.vehicleStatus LIKE ? OR ge.exitStatus LIKE ?)`;
-        const s = `%${search.trim()}%`;
-        params.push(s, s, s, s, s, s, s);
+        ft = freeText("GateEntries", search);
+        query += ` AND ${ft.fragment}`;
+        params.push(...ft.params);
     }
 
     query += ` ORDER BY ge.createdAt DESC, ge.id DESC`;
 
-    const rows = await pool.execute(query, params);
+    const rows = await pool.execute(query, params).catch(async (e) => {
+        if (ft && ft.kind === "match" && e && /MATCH|FULLTEXT/i.test(e && e.message ? e.message : "")) {
+            const like = freeText("GateEntries", search || "", true);
+            query = query.replace(ft.fragment, like.fragment);
+            params = params.slice(0, params.length - ft.params.length).concat(like.params);
+            return pool.execute(query, params);
+        }
+        throw e;
+    });
     return rows;
 };
 
@@ -188,6 +229,7 @@ exports.getStats = async ({ startDate, endDate } = {}) => {
 
     const pool = await connectDB();
     await ensureSoftDeleteColumns(pool);
+    await ensureSearchIndexes(pool);
 
     let query = `
         SELECT
@@ -202,8 +244,8 @@ exports.getStats = async ({ startDate, endDate } = {}) => {
     const params = [];
 
     if (startDate && endDate) {
-        query += ` AND (DATE(createdAt) >= ? AND DATE(createdAt) <= ? OR (entryDateTime IS NOT NULL AND DATE(STR_TO_DATE(entryDateTime, '%d-%m-%Y %h:%i:%s %p')) >= ? AND DATE(STR_TO_DATE(entryDateTime, '%d-%m-%Y %h:%i:%s %p')) <= ?))`;
-        params.push(startDate, endDate, startDate, endDate);
+        query += ` AND ${dateRangeClause("")}`;
+        params.push(`${startDate}T00:00:00`, `${nextDay(endDate)}T00:00:00`, startDate, endDate);
     }
 
     const rows = await pool.execute(query, params);
@@ -223,6 +265,7 @@ exports.getRecent = async ({ startDate, endDate, limit = 5 } = {}) => {
 
     const pool = await connectDB();
     await ensureSoftDeleteColumns(pool);
+    await ensureSearchIndexes(pool);
 
     let limitVal = parseInt(limit, 10);
     if (isNaN(limitVal) || limitVal <= 0) limitVal = 5;
@@ -239,8 +282,8 @@ exports.getRecent = async ({ startDate, endDate, limit = 5 } = {}) => {
     const params = [];
 
     if (startDate && endDate) {
-        query += ` AND (DATE(createdAt) >= ? AND DATE(createdAt) <= ? OR (entryDateTime IS NOT NULL AND DATE(STR_TO_DATE(entryDateTime, '%d-%m-%Y %h:%i:%s %p')) >= ? AND DATE(STR_TO_DATE(entryDateTime, '%d-%m-%Y %h:%i:%s %p')) <= ?))`;
-        params.push(startDate, endDate, startDate, endDate);
+        query += ` AND ${dateRangeClause("")}`;
+        params.push(`${startDate}T00:00:00`, `${nextDay(endDate)}T00:00:00`, startDate, endDate);
     }
 
     query += ` ORDER BY createdAt DESC, id DESC LIMIT ${limitVal}`;
@@ -253,6 +296,8 @@ exports.getRecent = async ({ startDate, endDate, limit = 5 } = {}) => {
 exports.checkDuplicates = async ({ vehicleNumber, routeName, sealNumbers, date }) => {
     const pool = await connectDB();
     await ensureSoftDeleteColumns(pool);
+    await ensureCreatedByDetailColumns(pool);
+    await ensureSearchIndexes(pool);
 
     const result = {
         duplicateVehicle: null,
@@ -270,11 +315,11 @@ exports.checkDuplicates = async ({ vehicleNumber, routeName, sealNumbers, date }
         const vRows = await pool.execute(
             `SELECT gateEntryId, vehicleNumber, vehicleType, driverName, routeName, entryDateTime, vehicleStatus, exitStatus
              FROM GateEntries
-             WHERE UPPER(vehicleNumber) = UPPER(?)
+             WHERE (UPPER(vehicleNumber) = UPPER(?) OR vehKey = ?)
                AND (isDeleted IS NULL OR isDeleted = 0)
-               AND (DATE(createdAt) = ? OR (entryDateTime IS NOT NULL AND DATE(STR_TO_DATE(entryDateTime, '%d-%m-%Y %h:%i:%s %p')) = ?))
+               AND ${sameDayClause()}
              ORDER BY createdAt DESC LIMIT 1`,
-            [vehicleNumber.trim(), targetDate, targetDate]
+            [vehicleNumber.trim(), normalizePlate(vehicleNumber), `${targetDate}T00:00:00`, `${nextDay(targetDate)}T00:00:00`, targetDate]
         );
         if (vRows.length > 0) {
             result.duplicateVehicle = vRows[0];
@@ -288,29 +333,34 @@ exports.checkDuplicates = async ({ vehicleNumber, routeName, sealNumbers, date }
              FROM GateEntries
              WHERE routeName = ?
                AND (isDeleted IS NULL OR isDeleted = 0)
-               AND (DATE(createdAt) = ? OR (entryDateTime IS NOT NULL AND DATE(STR_TO_DATE(entryDateTime, '%d-%m-%Y %h:%i:%s %p')) = ?))
+               AND ${sameDayClause()}
              ORDER BY createdAt DESC LIMIT 1`,
-            [routeName.trim(), targetDate, targetDate]
+            [routeName.trim(), `${targetDate}T00:00:00`, `${nextDay(targetDate)}T00:00:00`, targetDate]
         );
         if (rvRows.length > 0) {
             result.duplicateRouteVehicle = rvRows[0];
         }
     }
 
-    // 3. Check duplicate seal numbers - across ALL dates (a seal is never reused,
-    //    the day it was used on is shown as the usage detail)
+    // 3. Check duplicate seal numbers - across ALL dates. Uses the indexed
+    //    GateSeals lookup table for exact, fast matching. A seal is never
+    //    reused; the day it was used on is shown as the usage detail.
     if (Array.isArray(sealNumbers) && sealNumbers.length > 0) {
         const filteredSeals = sealNumbers.filter(s => s && s.trim());
         for (const seal of filteredSeals) {
             const sRows = await pool.execute(
-                `SELECT gateEntryId, vehicleNumber, driverName, createdByName, createdByEmpId, sealNumbers, entryDateTime, createdAt
-                 FROM GateEntries
-                 WHERE JSON_CONTAINS(sealNumbers, ?)
-                   AND (isDeleted IS NULL OR isDeleted = 0)
-                 ORDER BY createdAt DESC LIMIT 1`,
-                [JSON.stringify(seal.trim())]
-            );
-            if (sRows.length > 0) {
+                `SELECT gs.sealNumber, gs.gateEntryId, gs.vehicleNumber, gs.entryDateTime,
+                        ge.driverName, ge.createdByName, ge.createdByEmpId, ge.createdAt
+                 FROM GateSeals gs
+                 LEFT JOIN GateEntries ge ON ge.gateEntryId = gs.gateEntryId
+                 WHERE gs.sealNumber = ?
+                   AND (gs.isDeleted IS NULL OR gs.isDeleted = 0)
+                   AND (ge.isDeleted IS NULL OR ge.isDeleted = 0)
+                 ORDER BY ge.createdAt DESC, gs.id DESC
+                 LIMIT 1`,
+                [seal.trim()]
+            ).catch(() => []);
+            if (sRows && sRows.length > 0) {
                 const existing = sRows[0];
                 const usedDate = existing.entryDateTime
                     ? existing.entryDateTime
@@ -345,17 +395,20 @@ exports.checkDuplicates = async ({ vehicleNumber, routeName, sealNumbers, date }
 exports.findTodayByVehicle = async (vehicleNumber) => {
     const pool = await connectDB();
     await ensureSoftDeleteColumns(pool);
+    await ensureSearchIndexes(pool);
 
+    const { normalizePlate } = require("../utils/searchIndexes");
+    const key = normalizePlate(vehicleNumber);
     const today = new Date().toISOString().slice(0, 10);
     try {
         const rows = await pool.execute(
             `SELECT gateEntryId, vehicleNumber, driverName, routeName, entryDateTime, vehicleStatus, exitStatus, exitDateTime
              FROM GateEntries
-             WHERE UPPER(vehicleNumber) = UPPER(?)
+             WHERE (UPPER(vehicleNumber) = UPPER(?) OR vehKey = ?)
                AND (isDeleted IS NULL OR isDeleted = 0)
-               AND (DATE(createdAt) = ? OR (entryDateTime IS NOT NULL AND DATE(STR_TO_DATE(entryDateTime, '%d-%m-%Y %h:%i:%s %p')) = ?))
+               AND ${sameDayClause()}
              ORDER BY createdAt DESC LIMIT 1`,
-            [vehicleNumber.trim(), today, today]
+            [vehicleNumber.trim(), key, `${today}T00:00:00`, `${nextDay(today)}T00:00:00`, today]
         );
         if (rows.length > 0) return rows[0];
     } catch (e) {
@@ -367,10 +420,10 @@ exports.findTodayByVehicle = async (vehicleNumber) => {
         const latest = await pool.execute(
             `SELECT gateEntryId, vehicleNumber, driverName, routeName, entryDateTime, vehicleStatus, exitStatus, exitDateTime
              FROM GateEntries
-             WHERE UPPER(vehicleNumber) = UPPER(?)
+             WHERE (UPPER(vehicleNumber) = UPPER(?) OR vehKey = ?)
                AND (isDeleted IS NULL OR isDeleted = 0)
              ORDER BY createdAt DESC LIMIT 1`,
-            [vehicleNumber.trim()]
+            [vehicleNumber.trim(), key]
         );
         if (latest.length > 0) return latest[0];
     } catch (e2) {
@@ -450,6 +503,7 @@ exports.delete = async (id, user = null, ipAddress = null) => {
             record.gateEntryId
         ]
     );
+    await markGateSealsDeleted(pool, record.gateEntryId);
 
     return true;
 };
@@ -458,6 +512,7 @@ exports.update = async (id, data) => {
     const pool = await connectDB();
     await ensureRouteColumn(pool);
     await ensureCreatedByDetailColumns(pool);
+    await ensureSearchIndexes(pool);
 
     const lookupResult = await pool.execute(
         "SELECT * FROM GateEntries WHERE (gateEntryId = ? OR CAST(id AS CHAR) = ?) AND (isDeleted IS NULL OR isDeleted = 0)",
@@ -515,6 +570,18 @@ exports.update = async (id, data) => {
             existing.gateEntryId
         ]
     );
+
+    let parsedSeals = [];
+    if (Array.isArray(data.sealNumbers)) parsedSeals = data.sealNumbers;
+    else if (typeof data.sealNumbers === "string") {
+        try { parsedSeals = JSON.parse(data.sealNumbers); } catch { parsedSeals = []; }
+    }
+    await syncGateSeals(pool, {
+        gateEntryId: existing.gateEntryId,
+        vehicleNumber: data.vehicleNumber || existing.vehicleNumber,
+        sealNumbers: parsedSeals,
+        entryDateTime: entryDate,
+    });
 
     return { ...existing, ...data, gateEntryId: existing.gateEntryId, updatedAt: now };
 };

@@ -138,6 +138,7 @@
 
 
 const path = require("path");
+const fs = require("fs");
 require("dotenv").config({ path: path.resolve(__dirname, ".env") });
 
 const express = require("express");
@@ -230,6 +231,12 @@ app.use(
 
 app.use((req, res, next) => {
     console.log(`${req.method} ${req.url}`);
+    const started = Date.now();
+    res.on("finish", () => {
+        try {
+            fs.appendFileSync("C:\\Users\\DELL\\AppData\\Local\\Temp\\opencode\\backend-requests.log", `${new Date().toISOString()} ${req.method} ${req.originalUrl} -> ${res.statusCode} ${Date.now() - started}ms\n`);
+        } catch {}
+    });
     next();
 });
 

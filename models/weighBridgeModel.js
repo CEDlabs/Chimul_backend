@@ -1,6 +1,16 @@
 const { connectDB, sql } = require("../config/db");
 const AuditLog = require("./auditLogModel");
 const AlternativeVehicle = require("./alternativeVehicleModel");
+const { ensureSearchIndexes, normalizePlate, freeText } = require("../utils/searchIndexes");
+
+const dayRange = (offset = 0) => {
+    const start = new Date();
+    start.setHours(0, 0, 0, 0);
+    start.setDate(start.getDate() + offset);
+    const end = new Date(start);
+    end.setDate(end.getDate() + 1);
+    return { start, end };
+};
 
 const generateWBId = () =>
     `WB-${Date.now().toString().slice(-7)}-${Math.floor(100 + Math.random() * 900)}`;
@@ -75,6 +85,7 @@ async function ensureWBTable(pool) {
 exports.create = async (data) => {
     const pool = await connectDB();
     await ensureWBTable(pool);
+    await ensureSearchIndexes(pool);
 
     const wbEntryId = generateWBId();
 
@@ -185,20 +196,25 @@ exports.saveTare = async (wbEntryId, tareWeight, mode) => {
 
 exports.findActive = async (vehicleNumber) => {
     const pool = await connectDB();
+    await ensureWBTable(pool);
+    await ensureSearchIndexes(pool);
 
     const numbers = await expandVehicleNumbers(vehicleNumber, new Date().toISOString().slice(0, 10));
     if (numbers.length === 0) return null;
+    const keys = numbers.map(normalizePlate).filter(Boolean);
     const placeholders = numbers.map(() => "?").join(",");
+    const keyPlaceholders = keys.map(() => "?").join(",");
+    const { start } = dayRange();
 
     const result = await pool.execute(
         `SELECT * FROM WeighBridgeEntries
-         WHERE UPPER(vehicleNumber) IN (${placeholders})
+         WHERE (UPPER(vehicleNumber) IN (${placeholders}) OR vehKey IN (${keyPlaceholders}))
            AND status IN ('Intermediate', 'TarePending')
            AND (isDeleted IS NULL OR isDeleted = 0)
-           AND ${sql.date("createdAt")} = ${sql.curdate()}
+           AND createdAt >= ?
          ORDER BY createdAt DESC
          LIMIT 1`,
-        numbers
+        [...numbers, ...keys, start]
     );
 
     return result[0] || null;
@@ -206,21 +222,26 @@ exports.findActive = async (vehicleNumber) => {
 
 exports.findTodayCompleted = async (vehicleNumber) => {
     const pool = await connectDB();
+    await ensureWBTable(pool);
+    await ensureSearchIndexes(pool);
 
     const numbers = await expandVehicleNumbers(vehicleNumber, new Date().toISOString().slice(0, 10));
     if (numbers.length === 0) return null;
+    const keys = numbers.map(normalizePlate).filter(Boolean);
     const placeholders = numbers.map(() => "?").join(",");
+    const keyPlaceholders = keys.map(() => "?").join(",");
+    const { start } = dayRange();
 
     const result = await pool.execute(
         `SELECT wbEntryId, vehicleNumber, grossWeight, tareWeight, netWeight, status, createdAt
          FROM WeighBridgeEntries
-         WHERE UPPER(vehicleNumber) IN (${placeholders})
+         WHERE (UPPER(vehicleNumber) IN (${placeholders}) OR vehKey IN (${keyPlaceholders}))
            AND status = 'Completed'
            AND (isDeleted IS NULL OR isDeleted = 0)
-           AND ${sql.date("createdAt")} = ${sql.curdate()}
+           AND createdAt >= ?
          ORDER BY createdAt DESC
          LIMIT 1`,
-        numbers
+        [...numbers, ...keys, start]
     );
 
     return result[0] || null;
@@ -230,6 +251,7 @@ exports.findTodayCompleted = async (vehicleNumber) => {
 exports.getAll = async ({ startDate, endDate, search } = {}) => {
     const pool = await connectDB();
     await ensureSoftDeleteColumns(pool);
+    await ensureSearchIndexes(pool);
 
     let query = `
         SELECT wb.*,
@@ -242,6 +264,7 @@ exports.getAll = async ({ startDate, endDate, search } = {}) => {
         WHERE (wb.isDeleted IS NULL OR wb.isDeleted = 0)
     `;
     const params = [];
+    let ft = null;
 
     if (startDate && endDate) {
         query += ` AND (wb.createdAt >= ? AND wb.createdAt <= ?)`;
@@ -249,14 +272,22 @@ exports.getAll = async ({ startDate, endDate, search } = {}) => {
     }
 
     if (search && search.trim()) {
-        query += ` AND (wb.vehicleNumber LIKE ? OR wb.wbEntryId LIKE ? OR wb.driverName LIKE ? OR wb.supplierCode LIKE ?)`;
-        const s = `%${search.trim()}%`;
-        params.push(s, s, s, s);
+        ft = freeText("WeighBridgeEntries", search);
+        query += ` AND ${ft.fragment}`;
+        params.push(...ft.params);
     }
 
     query += ` ORDER BY wb.createdAt DESC, wb.id DESC`;
 
-    const rows = await pool.execute(query, params);
+    const rows = await pool.execute(query, params).catch(async (e) => {
+        if (ft && ft.kind === "match" && e && /MATCH|FULLTEXT/i.test(e && e.message ? e.message : "")) {
+            const like = freeText("WeighBridgeEntries", search || "", true);
+            query = query.replace(ft.fragment, like.fragment);
+            params = params.slice(0, params.length - ft.params.length).concat(like.params);
+            return pool.execute(query, params);
+        }
+        throw e;
+    });
 
     return rows.map((row) => {
         if (row.labSerialNumbers && typeof row.labSerialNumbers === "string") {

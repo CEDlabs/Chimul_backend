@@ -1,6 +1,7 @@
 const { connectDB, sql } = require("../config/db");
 const AuditLog = require("./auditLogModel");
 const AlternativeVehicle = require("./alternativeVehicleModel");
+const { ensureSearchIndexes, normalizePlate, freeText } = require("../utils/searchIndexes");
 
 const ensureTable = async (pool) => {
     await pool.execute(`
@@ -132,6 +133,7 @@ exports.create = async (data) => {
     await ensureTable(pool);
     await migrateRemarksColumn(pool);
     await ensureSoftDeleteColumns(pool);
+    await ensureSearchIndexes(pool);
     const collectedAt = data.collectedAt && !Number.isNaN(new Date(data.collectedAt).getTime())
         ? new Date(data.collectedAt)
         : new Date();
@@ -146,9 +148,12 @@ exports.create = async (data) => {
     ).catch(() => []);
 
     if (!existingBySample || existingBySample.length === 0) {
+        const base = new Date(collectedAt);
+        base.setHours(0, 0, 0, 0);
+        const end = new Date(base.getTime() + 86400000);
         const existingRows = await pool.execute(
-            "SELECT sampleId, vehicleNumber, collectedAt FROM SampleCollections WHERE vehicleNumber = ? AND DATE(collectedAt) = DATE(?) AND (isDeleted IS NULL OR isDeleted = 0) LIMIT 1",
-            [String(data.vehicleNumber).toUpperCase(), collectedAt]
+            "SELECT sampleId, vehicleNumber, collectedAt FROM SampleCollections WHERE (UPPER(vehicleNumber) = ? OR vehKey = ?) AND collectedAt >= ? AND collectedAt < ? AND (isDeleted IS NULL OR isDeleted = 0) LIMIT 1",
+            [String(data.vehicleNumber).toUpperCase(), normalizePlate(data.vehicleNumber), base, end]
         ).catch(() => []);
         if (existingRows && existingRows.length > 0) {
             // Update existing record for vehicle today instead of throwing duplicate error
@@ -238,33 +243,72 @@ exports.create = async (data) => {
     return { ...data, sampleId: targetSampleId, vehicleNumber: String(data.vehicleNumber).toUpperCase(), collectedAt };
 };
 
-exports.getAll = async ({ vehicleNumber, startDate, endDate, search } = {}) => {
+// Convert a client wall-clock date ("YYYY-MM-DD") plus the client's UTC offset
+// in minutes (e.g. +330 for IST) into a UTC datetime range for the whole local day.
+// Sample collections are stored in UTC (DB connection timezone "+00:00"), while the
+// frontend filters by the user's local date — without this conversion, records
+// collected early in the morning (00:00–05:30 IST) get stored as the previous UTC
+// day and disappear from "Today" views.
+const localDateRangeUtc = (dateStr, offsetMinutes) => {
+    const parts = String(dateStr || "").split("-").map(Number);
+    if (parts.length !== 3 || parts.some((n) => Number.isNaN(n))) return null;
+    const [y, m, d] = parts;
+    const offsetMs = (Number(offsetMinutes) || 0) * 60000;
+    const startUtc = new Date(Date.UTC(y, m - 1, d) - offsetMs);
+    const endUtc = new Date(startUtc.getTime() + 86400000);
+    const toSql = (dt) => dt.toISOString().slice(0, 19).replace("T", " ");
+    return { start: toSql(startUtc), end: toSql(endUtc) };
+};
+
+exports.getAll = async ({ vehicleNumber, routeNo, startDate, endDate, search, utcOffsetMinutes } = {}) => {
     const pool = await connectDB();
     await ensureTable(pool);
     await ensureSoftDeleteColumns(pool);
+    await ensureSearchIndexes(pool);
 
     let query = "SELECT * FROM SampleCollections WHERE (isDeleted IS NULL OR isDeleted = 0)";
     const params = [];
+    let ft = null;
 
-    if (vehicleNumber) {
-        query += " AND vehicleNumber = ?";
-        params.push(String(vehicleNumber).toUpperCase());
+    if (vehicleNumber && vehicleNumber.trim()) {
+        const vUpper = String(vehicleNumber).trim().toUpperCase();
+        const vClean = vUpper.replace(/[\s-]/g, "");
+        query += " AND (UPPER(vehicleNumber) = ? OR REPLACE(REPLACE(UPPER(vehicleNumber), ' ', ''), '-', '') = ?)";
+        params.push(vUpper, vClean);
+    }
+
+    if (routeNo && routeNo.trim()) {
+        const rUpper = String(routeNo).trim().toUpperCase();
+        const rClean = rUpper.replace(/^0+/, "");
+        query += " AND (UPPER(routeNo) = ? OR UPPER(routeNo) LIKE ? OR UPPER(routeNo) LIKE ?)";
+        params.push(rUpper, `${rUpper}%`, `%${rClean}%`);
     }
 
     if (startDate && endDate) {
-        query += " AND DATE(collectedAt) >= ? AND DATE(collectedAt) <= ?";
-        params.push(startDate, endDate);
+        const range = localDateRangeUtc(startDate, utcOffsetMinutes);
+        if (range) {
+            query += " AND collectedAt >= ? AND collectedAt < ?";
+            params.push(range.start, range.end);
+        }
     }
 
     if (search && search.trim()) {
-        query += " AND (vehicleNumber LIKE ? OR sampleId LIKE ? OR sampleCollectedBy LIKE ? OR routeNo LIKE ? OR materialType LIKE ?)";
-        const s = `%${search.trim()}%`;
-        params.push(s, s, s, s, s);
+        ft = freeText("SampleCollections", search);
+        query += ` AND ${ft.fragment}`;
+        params.push(...ft.params);
     }
 
     query += " ORDER BY collectedAt DESC, id DESC";
 
-    const rows = await pool.execute(query, params);
+    const rows = await pool.execute(query, params).catch(async (e) => {
+        if (ft && ft.kind === "match" && e && /MATCH|FULLTEXT/i.test(e && e.message ? e.message : "")) {
+            const like = freeText("SampleCollections", search || "", true);
+            query = query.replace(ft.fragment, like.fragment);
+            params = params.slice(0, params.length - ft.params.length).concat(like.params);
+            return pool.execute(query, params);
+        }
+        throw e;
+    });
     if (rows && rows.length > 0) {
         const sampleIds = rows.map((r) => r.sampleId);
         const placeholders = sampleIds.map(() => "?").join(",");
@@ -293,12 +337,29 @@ exports.getCompartments = async (sampleId) => {
     return rows || [];
 };
 
-exports.getByVehicleAndDate = async (vehicleNumber, date) => {
+exports.getByVehicleAndDate = async (vehicleNumber, date, utcOffsetMinutes) => {
     const pool = await connectDB();
     await ensureTable(pool);
+    await ensureSearchIndexes(pool);
+
+    let bounds;
+    const range = date && /^\d{4}-\d{2}-\d{2}/.test(String(date))
+        ? localDateRangeUtc(String(date).slice(0, 10), utcOffsetMinutes)
+        : null;
+    if (range) {
+        bounds = [range.start, range.end];
+    } else {
+        const now = new Date();
+        const dayStart = new Date(now);
+        dayStart.setHours(0, 0, 0, 0);
+        const dayEnd = new Date(dayStart);
+        dayEnd.setDate(dayEnd.getDate() + 1);
+        bounds = [dayStart, dayEnd];
+    }
+
     const rows = await pool.execute(
-        "SELECT * FROM SampleCollections WHERE vehicleNumber = ? AND DATE(collectedAt) = DATE(?) AND (isDeleted IS NULL OR isDeleted = 0) ORDER BY collectedAt DESC, id DESC LIMIT 1",
-        [String(vehicleNumber || "").trim().toUpperCase(), date || new Date()]
+        "SELECT * FROM SampleCollections WHERE (UPPER(vehicleNumber) = ? OR vehKey = ?) AND collectedAt >= ? AND collectedAt < ? AND (isDeleted IS NULL OR isDeleted = 0) ORDER BY collectedAt DESC, id DESC LIMIT 1",
+        [String(vehicleNumber || "").trim().toUpperCase(), normalizePlate(vehicleNumber), bounds[0], bounds[1]]
     ).catch(() => []);
     if (!rows || rows.length === 0) return null;
     const row = rows[0];
@@ -311,6 +372,7 @@ exports.getByVehicleAndDate = async (vehicleNumber, date) => {
 
 exports.getVehicleData = async (vehicleNumber) => {
     const pool = await connectDB();
+    await ensureSearchIndexes(pool);
     const input = String(vehicleNumber || "").trim().toUpperCase();
     if (!input) return { gate: null, weighbridge: null };
 
@@ -336,20 +398,18 @@ exports.getVehicleData = async (vehicleNumber) => {
     } catch (_) {}
 
     const plateArray = Array.from(searchPlates).filter(Boolean);
+    const plateKeys = Array.from(new Set(plateArray.map(normalizePlate).filter(Boolean)));
+    const keyPlaceholders = plateKeys.map(() => "?").join(",");
 
     // 1. Lookup Gate Entry
     let gateResult = [];
-    if (plateArray.length > 0) {
-        const placeholders = plateArray.map(() => "?").join(",");
+    if (plateKeys.length > 0) {
         gateResult = await pool.execute(
             `SELECT * FROM GateEntries
              WHERE (isDeleted IS NULL OR isDeleted = 0)
-               AND (
-                 UPPER(vehicleNumber) IN (${placeholders})
-                 OR REPLACE(REPLACE(UPPER(vehicleNumber), ' ', ''), '-', '') IN (${placeholders})
-               )
+               AND vehKey IN (${keyPlaceholders})
              ORDER BY COALESCE(entryDateTime, createdAt) DESC, id DESC LIMIT 1`,
-            [...plateArray, ...plateArray]
+            plateKeys
         ).catch(() => []);
     }
 
@@ -366,17 +426,13 @@ exports.getVehicleData = async (vehicleNumber) => {
 
     // 2. Lookup WeighBridge Entry
     let weighbridgeResult = [];
-    if (plateArray.length > 0) {
-        const placeholders = plateArray.map(() => "?").join(",");
+    if (plateKeys.length > 0) {
         weighbridgeResult = await pool.execute(
             `SELECT * FROM WeighBridgeEntries
              WHERE (isDeleted IS NULL OR isDeleted = 0)
-               AND (
-                 UPPER(vehicleNumber) IN (${placeholders})
-                 OR REPLACE(REPLACE(UPPER(vehicleNumber), ' ', ''), '-', '') IN (${placeholders})
-               )
+               AND vehKey IN (${keyPlaceholders})
              ORDER BY COALESCE(initialWeightAt, createdAt) DESC, id DESC LIMIT 1`,
-            [...plateArray, ...plateArray]
+            plateKeys
         ).catch(() => []);
     }
 

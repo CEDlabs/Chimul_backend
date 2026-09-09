@@ -1,4 +1,5 @@
 const { connectDB, sql } = require("../config/db");
+const { ensureSearchIndexes } = require("../utils/searchIndexes");
 
 async function ensureRouteAlternativeTable(pool) {
     try {
@@ -54,6 +55,7 @@ const normalizeAltRow = (row) => {
 exports.getAll = async () => {
     const pool = await connectDB();
     await ensureRouteAlternativeTable(pool);
+    await ensureSearchIndexes(pool);
 
     const rows = await pool.execute(
         `SELECT * FROM RouteAlternativeVehicles
@@ -96,6 +98,7 @@ exports.findActiveForRoute = async (routeName, date) => {
 exports.findActiveForVehicle = async (vehicleNumber, date) => {
     const pool = await connectDB();
     await ensureRouteAlternativeTable(pool);
+    await ensureSearchIndexes(pool);
 
     const targetDate = toDateOnly(date) || new Date().toISOString().slice(0, 10);
     const rows = await pool.execute(

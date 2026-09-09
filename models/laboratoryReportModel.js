@@ -78,7 +78,7 @@ exports.getDailyReport = async (dates, routes) => {
             dateList
         ),
         pool.execute(
-            `SELECT vehicleNumber, routeNo, taluk, temperature, clr, fat, snf, alcohol,
+            `SELECT vehicleNumber, routeNo, taluk, temperature, clr, fat, snf, alcohol, kgFat, kgSnf, totalKgFat, totalKgSNF,
                     ${sql.dateFormat("testedAt", "%Y-%m-%d")} AS day
              FROM LaboratoryTests
              WHERE ${sql.dateFormat("testedAt", "%Y-%m-%d")} IN (${placeholders})`,
@@ -142,19 +142,21 @@ exports.getDailyReport = async (dates, routes) => {
         for (const l of labs) {
             const key = routeKey(l.routeNo);
             if (!key || !isSelected(key)) continue;
-            const entry = labByRoute.get(key) || { taluk: "", temps: [], fats: [], snfs: [], alcohols: [] };
+            const entry = labByRoute.get(key) || { taluk: "", temps: [], fats: [], snfs: [], alcohols: [], kgFats: [], kgSnfs: [] };
             if (l.taluk && !entry.taluk) entry.taluk = l.taluk;
             entry.temps.push(toNum(l.temperature));
             entry.fats.push(toNum(l.fat));
             entry.snfs.push(toNum(l.snf));
             entry.alcohols.push(toNum(l.alcohol));
+            entry.kgFats.push(toNum(l.totalKgFat || l.kgFat));
+            entry.kgSnfs.push(toNum(l.totalKgSNF || l.kgSnf));
             labByRoute.set(key, entry);
         }
 
         return allKeys.map((route, index) => {
             const wb = wbByRoute.get(route) || { netTotal: 0, count: 0 };
             const mc = mcByRoute.get(route) || { kg: 0, kgFat: 0, kgSnf: 0, count: 0 };
-            const lab = labByRoute.get(route) || { taluk: "", temps: [], fats: [], snfs: [], alcohols: [] };
+            const lab = labByRoute.get(route) || { taluk: "", temps: [], fats: [], snfs: [], alcohols: [], kgFats: [], kgSnfs: [] };
 
             const taluk = TALUK_BY_ROUTE[route] || lab.taluk || "";
 
@@ -185,8 +187,11 @@ exports.getDailyReport = async (dates, routes) => {
             const temperature = avgNullable(lab.temps);
             const tankerFat = avgNullable(lab.fats);
             const tankerSnf = avgNullable(lab.snfs);
-            const tankerKgFat = round2((tankerQuantity || 0) * (tankerFat || 0) / 100);
-            const tankerKgSnf = round2((tankerQuantity || 0) * (tankerSnf || 0) / 100);
+            const storedKgFat = sum(lab.kgFats.filter(Boolean));
+            const storedKgSnf = sum(lab.kgSnfs.filter(Boolean));
+
+            const tankerKgFat = storedKgFat > 0 ? round2(storedKgFat) : round2((tankerQuantity || 0) * (tankerFat || 0) / 100);
+            const tankerKgSnf = storedKgSnf > 0 ? round2(storedKgSnf) : round2((tankerQuantity || 0) * (tankerSnf || 0) / 100);
 
             const truckFat = mc.kg > 0 ? mc.kgFat / mc.kg : null;
             const truckSnf = mc.kg > 0 ? mc.kgSnf / mc.kg : null;
@@ -291,7 +296,7 @@ exports.getFortnightReport = async (startDate, endDate) => {
 
     const [labResult, wbResult, mcResult, gateResult] = await Promise.all([
         pool.execute(
-            `SELECT ${sql.dateFormat("testedAt", "%Y-%m-%d")} AS day, routeNo, vehicleNumber, clr, fat, snf
+            `SELECT ${sql.dateFormat("testedAt", "%Y-%m-%d")} AS day, routeNo, vehicleNumber, clr, fat, snf, kgFat, kgSnf, totalKgFat, totalKgSNF
              FROM LaboratoryTests
              WHERE ${sql.dateFormat("testedAt", "%Y-%m-%d")} >= ? AND ${sql.dateFormat("testedAt", "%Y-%m-%d")} <= ?`,
             [start, end]
@@ -356,6 +361,8 @@ exports.getFortnightReport = async (startDate, endDate) => {
             avgClr: avgOf(labs.map((r) => r.clr)),
             avgFat: avgOf(labs.map((r) => r.fat)),
             avgSnf: avgOf(labs.map((r) => r.snf)),
+            totalKgFat: labs.reduce((a, r) => a + (toNum(r.totalKgFat || r.kgFat) || 0), 0),
+            totalKgSNF: labs.reduce((a, r) => a + (toNum(r.totalKgSNF || r.kgSnf) || 0), 0),
             routes: [],
         };
 
@@ -364,7 +371,7 @@ exports.getFortnightReport = async (startDate, endDate) => {
         const ensureRoute = (route) => {
             const key = route || "Unknown";
             if (!routeMap.has(key)) {
-                routeMap.set(key, { route: key, vehicleCount: 0, netTotalKg: 0, milkTotalKg: 0, clrs: [], fats: [], snfs: [] });
+                routeMap.set(key, { route: key, vehicleCount: 0, netTotalKg: 0, milkTotalKg: 0, clrs: [], fats: [], snfs: [], kgFats: [], kgSnfs: [] });
             }
             return routeMap.get(key);
         };
@@ -384,6 +391,8 @@ exports.getFortnightReport = async (startDate, endDate) => {
             rt.clrs.push(l.clr);
             rt.fats.push(l.fat);
             rt.snfs.push(l.snf);
+            rt.kgFats.push(toNum(l.totalKgFat || l.kgFat));
+            rt.kgSnfs.push(toNum(l.totalKgSNF || l.kgSnf));
             if (l.vehicleNumber) vehicleSeen.add(`${rt.route}__${l.vehicleNumber}`);
         }
 
@@ -396,6 +405,8 @@ exports.getFortnightReport = async (startDate, endDate) => {
                 avgClr: avgOf(rt.clrs),
                 avgFat: avgOf(rt.fats),
                 avgSnf: avgOf(rt.snfs),
+                totalKgFat: rt.kgFats.reduce((a, b) => a + (b || 0), 0),
+                totalKgSNF: rt.kgSnfs.reduce((a, b) => a + (b || 0), 0),
             }))
             .sort((a, b) => a.route.localeCompare(b.route, undefined, { numeric: true }));
 
@@ -412,6 +423,8 @@ exports.getFortnightReport = async (startDate, endDate) => {
         avgClr: avgOf(days.map((d) => d.avgClr)),
         avgFat: avgOf(days.map((d) => d.avgFat)),
         avgSnf: avgOf(days.map((d) => d.avgSnf)),
+        totalKgFat: days.reduce((a, d) => a + d.totalKgFat, 0),
+        totalKgSNF: days.reduce((a, d) => a + d.totalKgSNF, 0),
     };
 
     return { startDate: start, endDate: end, days, grandTotals };

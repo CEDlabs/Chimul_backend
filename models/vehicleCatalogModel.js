@@ -1,4 +1,5 @@
 const { connectDB, sql } = require("../config/db");
+const { ensureSearchIndexes } = require("../utils/searchIndexes");
 
 async function ensureVehicleCatalogTable(pool) {
     try {
@@ -8,6 +9,7 @@ async function ensureVehicleCatalogTable(pool) {
                 vehicleNumber VARCHAR(20) NOT NULL UNIQUE,
                 vehicleType VARCHAR(50) NULL,
                 routeName VARCHAR(100) NULL,
+                compartments INT DEFAULT 3,
                 remarks VARCHAR(255) NULL,
                 createdByName VARCHAR(100) NULL,
                 createdByEmpId VARCHAR(50) NULL,
@@ -36,6 +38,17 @@ async function ensureVehicleCatalogTable(pool) {
         }
     } catch (e) {
         console.warn("[VehicleCatalog] Migration warning:", e.message);
+    }
+
+    try {
+        const colCheck = await pool.execute(
+            "SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = 'VehicleCatalog' AND COLUMN_NAME = 'compartments'"
+        );
+        if (colCheck.length === 0) {
+            await pool.execute("ALTER TABLE VehicleCatalog ADD COLUMN compartments INT DEFAULT 3");
+        }
+    } catch (e) {
+        console.warn("[VehicleCatalog] Compartments migration warning:", e.message);
     }
 }
 
@@ -73,6 +86,7 @@ const normalizeRow = (row) => {
 exports.getAll = async () => {
     const pool = await connectDB();
     await ensureVehicleCatalogTable(pool);
+    await ensureSearchIndexes(pool);
 
     const rows = await pool.execute(
         `SELECT * FROM VehicleCatalog
@@ -101,6 +115,7 @@ exports.findByNumber = async (vehicleNumber) => {
 exports.getByRoute = async (routeName) => {
     const pool = await connectDB();
     await ensureVehicleCatalogTable(pool);
+    await ensureSearchIndexes(pool);
 
     const rName = String(routeName || "").trim();
     if (!rName) return null;
@@ -197,12 +212,13 @@ exports.create = async (data, user = null) => {
 
     const result = await pool.execute(
         `INSERT INTO VehicleCatalog
-         (vehicleNumber, vehicleType, routeName, remarks, createdByName, createdByEmpId, createdByEmail, createdByDept)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+         (vehicleNumber, vehicleType, routeName, compartments, remarks, createdByName, createdByEmpId, createdByEmail, createdByDept)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
             vehicleNumber,
             data.vehicleType || "Tanker",
             routeName,
+            parseInt(data.compartments, 10) || 3,
             data.remarks || "",
             name,
             empId,
@@ -216,6 +232,7 @@ exports.create = async (data, user = null) => {
         vehicleNumber,
         vehicleType: data.vehicleType || "Tanker",
         routeName,
+        compartments: parseInt(data.compartments, 10) || 3,
         remarks: data.remarks || "",
     };
 };
