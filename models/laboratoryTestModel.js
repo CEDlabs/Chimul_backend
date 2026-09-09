@@ -24,6 +24,7 @@ const ensureTable = async (pool) => {
             fat VARCHAR(50) NULL,
             alcohol VARCHAR(50) NULL,
             snf VARCHAR(50) NULL,
+            testResult VARCHAR(20) NULL,
             flavors ${sql.longText} NULL,
             remarks ${sql.longText} NULL,
             testedByName VARCHAR(150) NULL,
@@ -38,6 +39,7 @@ const ensureTable = async (pool) => {
 };
 
 const ensureSoftDeleteColumns = async (pool) => {
+    try { await pool.execute("ALTER TABLE LaboratoryTests ADD COLUMN testResult VARCHAR(20) NULL"); } catch {}
     try { await pool.execute("ALTER TABLE LaboratoryTests ADD COLUMN isDeleted TINYINT(1) DEFAULT 0"); } catch {}
     try { await pool.execute("ALTER TABLE LaboratoryTests ADD COLUMN deletedAt DATETIME NULL"); } catch {}
     try { await pool.execute("ALTER TABLE LaboratoryTests ADD COLUMN deletedBy VARCHAR(150) NULL"); } catch {}
@@ -61,6 +63,7 @@ const normalizeRecord = (row) => {
 exports.create = async (data) => {
     const pool = await connectDB();
     await ensureTable(pool);
+    await ensureSoftDeleteColumns(pool);
 
     const testedAt = data.testedAt && !Number.isNaN(new Date(data.testedAt).getTime())
         ? new Date(data.testedAt)
@@ -72,8 +75,8 @@ exports.create = async (data) => {
         `INSERT INTO LaboratoryTests
          (labTestId, vehicleNumber, routeNo, taluk, gateEntryId, wbEntryId, driverName, supplierName,
           materialType, productName, sealNumbers, temperature, cob, acidity, appearance,
-          clr, fat, alcohol, snf, flavors, remarks, testedByName, testedByEmpId, testedAt)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          clr, fat, alcohol, snf, testResult, flavors, remarks, testedByName, testedByEmpId, testedAt)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)` ,
         [
             data.labTestId,
             String(data.vehicleNumber).toUpperCase(),
@@ -94,6 +97,7 @@ exports.create = async (data) => {
             data.fat || "",
             data.alcohol || "",
             snf,
+            data.testResult || null,
             data.flavors || "",
             data.remarks || "",
             data.testedByName || "",
@@ -246,7 +250,7 @@ exports.update = async (id, data) => {
         `UPDATE LaboratoryTests SET
             temperature = ?, cob = ?, acidity = ?, appearance = ?,
             clr = ?, fat = ?, alcohol = ?, snf = ?,
-            flavors = ?, remarks = ?, updatedAt = ?
+            testResult = ?, flavors = ?, remarks = ?, updatedAt = ?
          WHERE labTestId = ?`,
         [
             data.temperature ?? existing.temperature,
@@ -257,6 +261,7 @@ exports.update = async (id, data) => {
             data.fat ?? existing.fat,
             data.alcohol ?? existing.alcohol,
             snf,
+            data.testResult ?? existing.testResult,
             data.flavors ?? existing.flavors,
             data.remarks ?? existing.remarks,
             now,

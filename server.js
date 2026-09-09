@@ -246,6 +246,10 @@ app.use("/api/waybridge", require("./routes/weighBridgeRoutes"));
 app.use("/api/sample-collection", require("./routes/sampleCollectionRoutes"));
 app.use("/api/milk-collection", require("./routes/milkCollectionRoutes"));
 app.use("/api/laboratory", require("./routes/laboratoryTestRoutes"));
+app.use("/api/storage", require("./routes/storageRoutes"));
+app.use("/api/product-requests", require("./routes/productRequestRoutes"));
+app.use("/api/fulfillments", require("./routes/fulfillmentRoutes"));
+app.use("/api/notifications", require("./routes/notificationRoutes"));
 app.use("/api/vehicles", require("./routes/vehicleRoutes"));
 app.use("/api/routes", require("./routes/routeRoutes"));
 

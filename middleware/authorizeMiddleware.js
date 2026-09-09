@@ -58,3 +58,12 @@ exports.canManage = (moduleDepartments = []) => (req, res, next) => {
         message: "You do not have permission to modify records in this module.",
     });
 };
+
+// Allows any authenticated user assigned to the department, while preserving
+// super-admin access. Use this for operational writes, not master-data changes.
+exports.canAccess = (moduleDepartments = []) => (req, res, next) => {
+    const user = req.session?.user;
+    if (!user) return res.status(401).json({ success: false, message: "Unauthorized. Please log in again." });
+    if (exports.isSuperAdmin(user) || moduleDepartments.includes(normalize(user.department))) return next();
+    return res.status(403).json({ success: false, message: "You do not have access to this department." });
+};
