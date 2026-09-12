@@ -2,6 +2,30 @@ const { connectDB, sql } = require("../config/db");
 const AuditLog = require("./auditLogModel");
 const { ensureSearchIndexes, syncGateSeals, markGateSealsDeleted, freeText, normalizePlate } = require("../utils/searchIndexes");
 
+const parseCustomDate = (dateStr) => {
+    if (!dateStr) return null;
+    if (typeof dateStr !== "string") {
+        const parsed = new Date(dateStr);
+        return isNaN(parsed.getTime()) ? null : parsed;
+    }
+    
+    const match = dateStr.trim().match(/^(\d{2})-(\d{2})-(\d{4})\s+(\d{1,2}):(\d{2}):(\d{2})\s*(AM|PM)?$/i);
+    if (match) {
+        let [ , d, m, y, h, min, s, ampm ] = match;
+        h = parseInt(h, 10);
+        if (ampm) {
+            if (ampm.toUpperCase() === 'PM' && h < 12) h += 12;
+            if (ampm.toUpperCase() === 'AM' && h === 12) h = 0;
+        }
+        const isoStr = `${y}-${m}-${d}T${String(h).padStart(2, '0')}:${min}:${s}`;
+        const parsed = new Date(isoStr);
+        if (!isNaN(parsed.getTime())) return parsed;
+    }
+    
+    const parsed = new Date(dateStr);
+    return isNaN(parsed.getTime()) ? null : parsed;
+};
+
 const nextDay = (isoDate) => {
     const d = new Date(`${isoDate}T00:00:00Z`);
     d.setUTCDate(d.getUTCDate() + 1);
@@ -120,11 +144,11 @@ exports.create = async (data) => {
 
     let entryDate = new Date();
     if (data.entryDateTime) {
-        const parsed = new Date(data.entryDateTime);
-        if (!isNaN(parsed.getTime())) {
-            entryDate = parsed;
-        }
+        const parsed = parseCustomDate(data.entryDateTime);
+        if (parsed) entryDate = parsed;
     }
+    console.log("data", data);
+    console.log(data.entryDateTime, typeof data.entryDateTime, entryDate, typeof entryDate)
 
     const { createdByInt, createdByName, createdByEmpId, createdByEmail, createdByDept } =
         extractUserDetails(data.createdBy);
@@ -537,8 +561,8 @@ exports.update = async (id, data) => {
 
     let entryDate = existing.entryDateTime;
     if (data.entryDateTime) {
-        const parsed = new Date(data.entryDateTime);
-        if (!isNaN(parsed.getTime())) entryDate = parsed;
+        const parsed = parseCustomDate(data.entryDateTime);
+        if (parsed) entryDate = parsed;
     }
 
     const now = new Date();

@@ -92,7 +92,9 @@ exports.cancel = async (id) => {
     await ensureTable(pool);
     const rows = await pool.execute("SELECT * FROM ProductRequests WHERE id = ?", [id]);
     if (!rows.length) throw new Error("Product request not found.");
-    if (rows[0].status === "fulfilled") throw new Error("Fulfilled requests cannot be cancelled.");
+    if (["fulfilled", "partially fulfilled"].includes(String(rows[0].status || "").toLowerCase())) {
+        throw new Error("Requests that have started filling cannot be cancelled.");
+    }
     await pool.execute(`UPDATE ProductRequests SET status = 'cancelled', updatedAt = ${sql.now()} WHERE id = ?`, [id]);
     return (await pool.execute("SELECT * FROM ProductRequests WHERE id = ?", [id]))[0];
 };

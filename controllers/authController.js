@@ -13,6 +13,10 @@ const COOKIE_MAX_AGE_MS = 12 * 60 * 60 * 1000; // 12 hours
 const ALLOWED_REGISTER_DEPARTMENTS = [
     "security",
     "stores",
+    "stores_tanker",
+    "storestanker",
+    "stores_silo",
+    "storessilo",
     "laboratory",
     "laboratory1",
     "production",
