@@ -231,7 +231,7 @@ exports.getAllVehicles = async (req, res) => {
 
 exports.checkDuplicates = async (req, res) => {
     try {
-        const { vehicleNumber, routeName, serialNumbers, allocationDate, excludeId } = req.query;
+        const { vehicleNumber, routeName, serialNumbers, allocationDate, excludeId, checkOnlyNew } = req.query;
 
         let parsedSerials = [];
         if (serialNumbers) {
@@ -247,7 +247,8 @@ exports.checkDuplicates = async (req, res) => {
             routeName,
             serialNumbers: parsedSerials,
             allocationDate,
-            excludeId
+            excludeId,
+            checkOnlyNew: checkOnlyNew === true || checkOnlyNew === "true"
         });
 
         const hasAnyDuplicate = Boolean(

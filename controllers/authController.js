@@ -163,7 +163,6 @@ exports.login = async (req, res) => {
             secure: process.env.COOKIE_SECURE === "true",
             sameSite: "lax",
             path: "/",
-            maxAge: COOKIE_MAX_AGE_MS,
         });
 
         return res.status(200).json({
@@ -238,7 +237,6 @@ exports.profile = async (req, res) => {
             secure: process.env.COOKIE_SECURE === "true",
             sameSite: "lax",
             path: "/",
-            maxAge: COOKIE_MAX_AGE_MS,
         });
 
         return res.status(200).json({
