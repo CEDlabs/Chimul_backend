@@ -140,7 +140,7 @@ exports.getAll = async () => {
     return rows.map(normalizeVehicle);
 };
 
-exports.checkDuplicates = async ({ vehicleNumber, primaryVehicleNumber, routeName, serialNumbers, allocationDate, excludeId }) => {
+exports.checkDuplicates = async ({ vehicleNumber, primaryVehicleNumber, routeName, serialNumbers, allocationDate, excludeId, checkOnlyNew }) => {
     const pool = await connectDB();
     await ensureVehiclesTable(pool);
     await ensureAuditColumns(pool);
@@ -198,6 +198,7 @@ exports.checkDuplicates = async ({ vehicleNumber, primaryVehicleNumber, routeNam
 
     // 3. Check if any serial number already allocated - across ALL dates
     //    (active seal numbers and retired/seal-changed numbers are reserved)
+    //    When checkOnlyNew is true, skip seals that belong to the current allocation (excludeId).
     if (Array.isArray(serialNumbers) && serialNumbers.length > 0) {
         const filtered = serialNumbers.filter(s => s && String(s).trim());
 
@@ -222,8 +223,27 @@ exports.checkDuplicates = async ({ vehicleNumber, primaryVehicleNumber, routeNam
 
         // B. Check against existing database records across ALL dates
         //    Uses the indexed VehicleSeals lookup table for exact & fast matches.
+        //    When checkOnlyNew is true, get current allocation's seals to skip them.
+        let existingSealsToSkip = new Set();
+        if (checkOnlyNew && excludeId) {
+            try {
+                const currentVehicle = await pool.execute(
+                    `SELECT serialNumbers FROM Vehicles WHERE id = ?`,
+                    [parseInt(excludeId, 10)]
+                );
+                if (currentVehicle.length > 0) {
+                    const currSerials = JSON.parse(currentVehicle[0].serialNumbers || "[]");
+                    currSerials.forEach(s => existingSealsToSkip.add(String(s).trim()));
+                }
+            } catch {}
+        }
+
         for (const serial of filtered) {
             const serialStr = String(serial).trim();
+            // Skip unchanged seals when checkOnlyNew is true
+            if (checkOnlyNew && existingSealsToSkip.has(serialStr)) {
+                continue;
+            }
             const sRows = await pool.execute(
                 `SELECT vs.sealNumber, vs.sealStatus, v.vehicleNumber, v.routeName, v.allocationDate
                  FROM VehicleSeals vs
@@ -304,6 +324,22 @@ exports.register = async (data) => {
 
     const { name, empId, email, dept } = extractUserDetails(data.createdBy);
 
+    // Look up compartments from VehicleCatalog; default to 2 if not found
+    let compartments = 2;
+    try {
+        const catRows = await pool.execute(
+            "SELECT compartments FROM VehicleCatalog WHERE UPPER(vehicleNumber) = UPPER(?) LIMIT 1",
+            [vehicleNumber]
+        );
+        if (catRows.length > 0 && catRows[0].compartments) {
+            compartments = parseInt(catRows[0].compartments, 10) || 2;
+        }
+    } catch {}
+    // Override with explicit value if provided in request
+    if (data.compartments !== undefined && data.compartments !== null && data.compartments !== "") {
+        compartments = parseInt(data.compartments, 10) || 2;
+    }
+
     const conn = await pool.getConnection();
     try {
         await conn.beginTransaction();
@@ -358,10 +394,20 @@ exports.register = async (data) => {
             }
 
             // 2. Check DB duplicates across active and retired seals
+            // When updating (target exists), only check NEW seals that differ from existing ones
+            let sealsToCheck = serialsArr;
+            if (target) {
+                const existingSerials = (() => {
+                    try { return JSON.parse(target.serialNumbers || "[]"); } catch { return []; }
+                })();
+                const existingSet = new Set(existingSerials.map(s => String(s).trim()));
+                sealsToCheck = serialsArr.filter(s => !existingSet.has(String(s).trim()));
+            }
+
             const dupCheck = await exports.checkDuplicates({
                 vehicleNumber: data.vehicleNumber,
                 routeName: data.routeName,
-                serialNumbers: serialsArr,
+                serialNumbers: sealsToCheck,
                 allocationDate: data.allocationDate,
                 excludeId: target ? target.id : null,
             });
@@ -371,7 +417,10 @@ exports.register = async (data) => {
                 if (firstDup.duplicateInForm) {
                     throw new Error(`Seal number '${firstDup.serialNumber}' is duplicated within the allocation form.`);
                 } else {
-                    throw new Error(`Seal number '${firstDup.serialNumber}' is already allocated to vehicle ${firstDup.vehicleNumber} on date ${(firstDup.allocationDate || "").slice(0, 10)}. Seal numbers cannot be duplicated.`);
+                    const dupDate = firstDup.allocationDate instanceof Date
+                        ? firstDup.allocationDate.toISOString().slice(0, 10)
+                        : String(firstDup.allocationDate || "").slice(0, 10);
+                    throw new Error(`Seal number '${firstDup.serialNumber}' is already allocated to vehicle ${firstDup.vehicleNumber} on date ${dupDate}. Seal numbers cannot be duplicated.`);
                 }
             }
         }
@@ -440,7 +489,7 @@ exports.register = async (data) => {
                     data.contractorCode || "",
                     data.productGroup || "Dairy Products",
                     data.productName || "",
-                    parseInt(data.compartments, 10) || 1,
+                    compartments,
                     data.destination || "",
                     data.purpose || "Unloading",
                     parseInt(data.weighBridgeNo, 10) || 1,
@@ -477,7 +526,7 @@ exports.register = async (data) => {
                     data.contractorCode || "",
                     data.productGroup || "Dairy Products",
                     data.productName || "",
-                    parseInt(data.compartments, 10) || 1,
+                    compartments,
                     data.destination || "",
                     data.purpose || "Unloading",
                     parseInt(data.weighBridgeNo, 10) || 1,
