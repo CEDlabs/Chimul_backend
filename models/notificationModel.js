@@ -5,29 +5,52 @@ const ensureTable = async (pool) => {
         CREATE TABLE IF NOT EXISTS Notifications (
             id INT ${sql.autoIncrement} PRIMARY KEY,
             recipientId VARCHAR(50) NOT NULL,
+            recipientDepartment VARCHAR(100) NULL,
             type VARCHAR(50) NOT NULL,
             title VARCHAR(180) NOT NULL,
             message ${sql.longText} NOT NULL,
             relatedRequestId INT NULL,
             isRead TINYINT(1) NOT NULL DEFAULT 0,
             createdAt DATETIME NOT NULL DEFAULT ${sql.now()},
-            INDEX idx_notifications_recipient (recipientId, isRead, createdAt)
+            INDEX idx_notifications_recipient (recipientId, isRead, createdAt),
+            INDEX idx_notifications_department (recipientDepartment, isRead, createdAt)
         )
     `);
 };
 
-exports.create = async ({ recipientId, type, title, message, relatedRequestId }) => {
+exports.create = async ({ recipientId, recipientDepartment, type, title, message, relatedRequestId }) => {
     if (!recipientId) return null;
     const pool = await connectDB();
     await ensureTable(pool);
-    await pool.execute("INSERT INTO Notifications (recipientId, type, title, message, relatedRequestId) VALUES (?, ?, ?, ?, ?)", [String(recipientId), type, title, message, relatedRequestId || null]);
+    await pool.execute("INSERT INTO Notifications (recipientId, recipientDepartment, type, title, message, relatedRequestId) VALUES (?, ?, ?, ?, ?, ?)", [String(recipientId), recipientDepartment || null, type, title, message, relatedRequestId || null]);
     return true;
 };
 
-exports.list = async (recipientId) => {
+exports.list = async (recipientId, { department, unreadOnly, limit } = {}) => {
     const pool = await connectDB();
     await ensureTable(pool);
-    return pool.execute("SELECT * FROM Notifications WHERE recipientId = ? ORDER BY createdAt DESC, id DESC LIMIT 50", [String(recipientId)]);
+    
+    let query = "SELECT * FROM Notifications WHERE recipientId = ?";
+    const params = [String(recipientId)];
+    
+    if (department) {
+        query += " AND LOWER(TRIM(recipientDepartment)) = ?";
+        params.push(String(department).trim().toLowerCase());
+    }
+    if (unreadOnly) {
+        query += " AND isRead = 0";
+    }
+    query += " ORDER BY createdAt DESC, id DESC";
+    if (limit) {
+        query += " LIMIT ?";
+        params.push(parseInt(limit));
+    }
+    
+    return pool.execute(query, params);
+};
+
+exports.listByDepartment = async (recipientId, department) => {
+    return exports.list(recipientId, { department });
 };
 
 exports.markRead = async (id, recipientId) => {

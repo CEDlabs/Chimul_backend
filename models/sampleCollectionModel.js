@@ -3,6 +3,44 @@ const AuditLog = require("./auditLogModel");
 const AlternativeVehicle = require("./alternativeVehicleModel");
 const { ensureSearchIndexes, normalizePlate, freeText } = require("../utils/searchIndexes");
 
+// Adulteration tests captured per compartment. All are stored as
+// "Positive" / "Negative" except Sodium Ion which is an optional PPM value.
+const ADULTERATION_FIELDS = [
+    "ammoniumSulphate",
+    "detergent",
+    "glucose",
+    "melamine",
+    "salt",
+    "sodiumCarbonate",
+    "sodiumCitrate",
+    "sorbitol",
+    "starch",
+    "sucrose",
+    "urea",
+    "vegetableOils",
+    "formaldehyde",
+    "maltodextrin",
+    "sodiumIonPPM",
+];
+
+// Optional "value" placeholders paired with each Positive/Negative adulteration
+// test (Sodium Ion already stores its own PPM value, so no extra placeholder).
+const ADULTERATION_VALUE_FIELDS = ADULTERATION_FIELDS
+    .filter((f) => f !== "sodiumIonPPM")
+    .map((f) => `${f}Value`);
+
+// Optional "value" placeholders paired with the quality tests.
+const QUALITY_VALUE_FIELDS = ["foreignMatterValue", "flavourValue", "cobValue"];
+
+// Columns used when reading compartment rows back from SampleCompartmentTests.
+const COMPARTMENT_SELECT = [
+    "foreignMatter", "flavour", "temperature", "cob",
+    ...QUALITY_VALUE_FIELDS,
+    ...ADULTERATION_FIELDS,
+    ...ADULTERATION_VALUE_FIELDS,
+    "skipped",
+].join(", ");
+
 const ensureTable = async (pool) => {
     await pool.execute(`
         CREATE TABLE IF NOT EXISTS SampleCollections (
@@ -37,6 +75,38 @@ const ensureTable = async (pool) => {
             flavour VARCHAR(20) NULL,
             temperature VARCHAR(20) NULL,
             cob VARCHAR(20) NULL,
+            foreignMatterValue VARCHAR(100) NULL,
+            flavourValue VARCHAR(100) NULL,
+            cobValue VARCHAR(100) NULL,
+            ammoniumSulphate VARCHAR(20) NULL,
+            detergent VARCHAR(20) NULL,
+            glucose VARCHAR(20) NULL,
+            melamine VARCHAR(20) NULL,
+            salt VARCHAR(20) NULL,
+            sodiumCarbonate VARCHAR(20) NULL,
+            sodiumCitrate VARCHAR(20) NULL,
+            sorbitol VARCHAR(20) NULL,
+            starch VARCHAR(20) NULL,
+            sucrose VARCHAR(20) NULL,
+            urea VARCHAR(20) NULL,
+            vegetableOils VARCHAR(20) NULL,
+            formaldehyde VARCHAR(20) NULL,
+            maltodextrin VARCHAR(20) NULL,
+            sodiumIonPPM VARCHAR(20) NULL,
+            ammoniumSulphateValue VARCHAR(100) NULL,
+            detergentValue VARCHAR(100) NULL,
+            glucoseValue VARCHAR(100) NULL,
+            melamineValue VARCHAR(100) NULL,
+            saltValue VARCHAR(100) NULL,
+            sodiumCarbonateValue VARCHAR(100) NULL,
+            sodiumCitrateValue VARCHAR(100) NULL,
+            sorbitolValue VARCHAR(100) NULL,
+            starchValue VARCHAR(100) NULL,
+            sucroseValue VARCHAR(100) NULL,
+            ureaValue VARCHAR(100) NULL,
+            vegetableOilsValue VARCHAR(100) NULL,
+            formaldehydeValue VARCHAR(100) NULL,
+            maltodextrinValue VARCHAR(100) NULL,
             skipped TINYINT(1) NOT NULL DEFAULT 0,
             testedBy VARCHAR(150) NULL,
             testedById VARCHAR(50) NULL,
@@ -47,6 +117,79 @@ const ensureTable = async (pool) => {
         )
     `);
     await migrateSealAndCompartmentColumns(pool);
+    await migrateAdulterationColumns(pool);
+    await migrateQualityValueColumns(pool);
+    await migrateAdulterationValueColumns(pool);
+};
+
+// Idempotent migration: optional "value" placeholders paired with each of the
+// quality tests that use a dropdown (Foreign Matter, Flavour, COB).
+const migrateQualityValueColumns = async (pool) => {
+    const defs = {
+        foreignMatterValue: "VARCHAR(100) NULL",
+        flavourValue: "VARCHAR(100) NULL",
+        cobValue: "VARCHAR(100) NULL",
+    };
+    for (const [col, ddl] of Object.entries(defs)) {
+        try {
+            const rows = await pool.execute(
+                "SELECT COUNT(*) AS c FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'SampleCompartmentTests' AND COLUMN_NAME = ?",
+                [col]
+            );
+            if (!rows.length || rows[0].c === 0) {
+                await pool.execute(`ALTER TABLE SampleCompartmentTests ADD COLUMN ${col} ${ddl}`);
+            }
+        } catch (_) { /* ignore if table does not exist yet */ }
+    }
+};
+
+// Idempotent migration: optional "value" placeholders paired with each
+// Positive/Negative adulteration test.
+const migrateAdulterationValueColumns = async (pool) => {
+    for (const col of ADULTERATION_VALUE_FIELDS) {
+        try {
+            const rows = await pool.execute(
+                "SELECT COUNT(*) AS c FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'SampleCompartmentTests' AND COLUMN_NAME = ?",
+                [col]
+            );
+            if (!rows.length || rows[0].c === 0) {
+                await pool.execute(`ALTER TABLE SampleCompartmentTests ADD COLUMN ${col} VARCHAR(100) NULL`);
+            }
+        } catch (_) { /* ignore if table does not exist yet */ }
+    }
+};
+
+// Idempotent migration: adds the per-compartment adulteration test columns to
+// existing SampleCompartmentTests tables (fresh installs get them via the DDL).
+const migrateAdulterationColumns = async (pool) => {
+    const defs = {
+        ammoniumSulphate: "VARCHAR(20) NULL",
+        detergent: "VARCHAR(20) NULL",
+        glucose: "VARCHAR(20) NULL",
+        melamine: "VARCHAR(20) NULL",
+        salt: "VARCHAR(20) NULL",
+        sodiumCarbonate: "VARCHAR(20) NULL",
+        sodiumCitrate: "VARCHAR(20) NULL",
+        sorbitol: "VARCHAR(20) NULL",
+        starch: "VARCHAR(20) NULL",
+        sucrose: "VARCHAR(20) NULL",
+        urea: "VARCHAR(20) NULL",
+        vegetableOils: "VARCHAR(20) NULL",
+        formaldehyde: "VARCHAR(20) NULL",
+        maltodextrin: "VARCHAR(20) NULL",
+        sodiumIonPPM: "VARCHAR(20) NULL",
+    };
+    for (const [col, ddl] of Object.entries(defs)) {
+        try {
+            const rows = await pool.execute(
+                "SELECT COUNT(*) AS c FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'SampleCompartmentTests' AND COLUMN_NAME = ?",
+                [col]
+            );
+            if (!rows.length || rows[0].c === 0) {
+                await pool.execute(`ALTER TABLE SampleCompartmentTests ADD COLUMN ${col} ${ddl}`);
+            }
+        } catch (_) { /* ignore if table does not exist yet */ }
+    }
 };
 
 const migrateRemarksColumn = async (pool) => {
@@ -76,6 +219,19 @@ const migrateSealAndCompartmentColumns = async (pool) => {
 
 const saveCompartments = async (pool, data, collectedAt) => {
     const compartments = Array.isArray(data.compartments) ? data.compartments : [];
+    const compFields = ADULTERATION_FIELDS;
+    const valueFields = [...QUALITY_VALUE_FIELDS, ...ADULTERATION_VALUE_FIELDS];
+    const allFields = [...compFields, ...valueFields];
+    const cols = allFields.join(", ");
+    const setCols = allFields.map((f) => `${f} = ?`).join(", ");
+    const placeholders = allFields.map(() => "?").join(", ");
+    const valuesOf = (c) =>
+        allFields.map((f) => {
+            const v = c[f];
+            if (v === undefined || v === null || String(v).trim() === "") return null;
+            return String(v);
+        })
+
     for (const c of compartments) {
         const compartment = String(c.compartment || "").trim().toLowerCase();
         if (!compartment) continue;
@@ -89,7 +245,7 @@ const saveCompartments = async (pool, data, collectedAt) => {
         if (existingComp && existingComp.length > 0) {
             await pool.execute(
                 `UPDATE SampleCompartmentTests
-                 SET vehicleNumber = ?, foreignMatter = ?, flavour = ?, temperature = ?, cob = ?, skipped = ?, testedBy = ?, testedById = ?, testedAt = ?
+                 SET vehicleNumber = ?, foreignMatter = ?, flavour = ?, temperature = ?, cob = ?, ${setCols}, skipped = ?, testedBy = ?, testedById = ?, testedAt = ?
                  WHERE sampleId = ? AND compartment = ?`,
                 [
                     String(data.vehicleNumber || "").toUpperCase(),
@@ -97,6 +253,7 @@ const saveCompartments = async (pool, data, collectedAt) => {
                     c.flavour || "",
                     tempVal,
                     c.cob || "",
+                    ...valuesOf(c),
                     c.skipped ? 1 : 0,
                     data.sampleCollectedBy || "",
                     data.sampleCollectedByEmpId || "",
@@ -108,8 +265,8 @@ const saveCompartments = async (pool, data, collectedAt) => {
         } else {
             await pool.execute(
                 `INSERT INTO SampleCompartmentTests
-                 (sampleId, vehicleNumber, compartment, foreignMatter, flavour, temperature, cob, skipped, testedBy, testedById, testedAt)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                 (sampleId, vehicleNumber, compartment, foreignMatter, flavour, temperature, cob, ${cols}, skipped, testedBy, testedById, testedAt)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ${placeholders}, ?, ?, ?, ?)`,
                 [
                     data.sampleId,
                     String(data.vehicleNumber || "").toUpperCase(),
@@ -118,6 +275,7 @@ const saveCompartments = async (pool, data, collectedAt) => {
                     c.flavour || "",
                     tempVal,
                     c.cob || "",
+                    ...valuesOf(c),
                     c.skipped ? 1 : 0,
                     data.sampleCollectedBy || "",
                     data.sampleCollectedByEmpId || "",
@@ -132,6 +290,8 @@ exports.create = async (data) => {
     const pool = await connectDB();
     await ensureTable(pool);
     await migrateRemarksColumn(pool);
+    await migrateAdulterationColumns(pool);
+    await migrateAdulterationValueColumns(pool);
     await ensureSoftDeleteColumns(pool);
     await ensureSearchIndexes(pool);
     const collectedAt = data.collectedAt && !Number.isNaN(new Date(data.collectedAt).getTime())
@@ -263,6 +423,8 @@ const localDateRangeUtc = (dateStr, offsetMinutes) => {
 exports.getAll = async ({ vehicleNumber, routeNo, startDate, endDate, search, utcOffsetMinutes } = {}) => {
     const pool = await connectDB();
     await ensureTable(pool);
+    await migrateAdulterationColumns(pool);
+    await migrateAdulterationValueColumns(pool);
     await ensureSoftDeleteColumns(pool);
     await ensureSearchIndexes(pool);
 
@@ -313,7 +475,7 @@ exports.getAll = async ({ vehicleNumber, routeNo, startDate, endDate, search, ut
         const sampleIds = rows.map((r) => r.sampleId);
         const placeholders = sampleIds.map(() => "?").join(",");
         const compRows = await pool.execute(
-            `SELECT sampleId, compartment, foreignMatter, flavour, temperature, cob, skipped
+            `SELECT sampleId, compartment, ${COMPARTMENT_SELECT}
              FROM SampleCompartmentTests WHERE sampleId IN (${placeholders}) ORDER BY compartment`,
             sampleIds
         ).catch(() => []);
@@ -330,8 +492,10 @@ exports.getAll = async ({ vehicleNumber, routeNo, startDate, endDate, search, ut
 exports.getCompartments = async (sampleId) => {
     const pool = await connectDB();
     await ensureTable(pool);
+    await migrateAdulterationColumns(pool);
+    await migrateAdulterationValueColumns(pool);
     const rows = await pool.execute(
-        "SELECT compartment, foreignMatter, flavour, temperature, cob, skipped FROM SampleCompartmentTests WHERE sampleId = ? ORDER BY compartment",
+        `SELECT compartment, ${COMPARTMENT_SELECT} FROM SampleCompartmentTests WHERE sampleId = ? ORDER BY compartment`,
         [sampleId]
     ).catch(() => []);
     return rows || [];
@@ -340,6 +504,8 @@ exports.getCompartments = async (sampleId) => {
 exports.getByVehicleAndDate = async (vehicleNumber, date, utcOffsetMinutes) => {
     const pool = await connectDB();
     await ensureTable(pool);
+    await migrateAdulterationColumns(pool);
+    await migrateAdulterationValueColumns(pool);
     await ensureSearchIndexes(pool);
 
     let bounds;
@@ -528,6 +694,8 @@ exports.remove = async (id, user = null, ipAddress = null) => {
 exports.update = async (id, data) => {
     const pool = await connectDB();
     await ensureTable(pool);
+    await migrateAdulterationColumns(pool);
+    await migrateAdulterationValueColumns(pool);
     await ensureSoftDeleteColumns(pool);
 
     const lookupResult = await pool.execute(

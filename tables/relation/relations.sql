@@ -256,6 +256,9 @@ CREATE TABLE SampleCollections (
 );
 
 -- SampleCompartmentTests (1-to-many child of SampleCollections)
+-- Adulteration tests: "Positive" / "Negative" with an optional value placeholder
+-- each; Sodium Ion stores an optional PPM value. Quality tests (Foreign Matter,
+-- Flavour, COB) also carry an optional value placeholder.
 CREATE TABLE SampleCompartmentTests (
     id INT AUTO_INCREMENT PRIMARY KEY,               -- PK
     sampleId VARCHAR(50) NOT NULL,                   -- FK -> SampleCollections.sampleId
@@ -265,6 +268,38 @@ CREATE TABLE SampleCompartmentTests (
     flavour VARCHAR(20) NULL,
     temperature VARCHAR(20) NULL,
     cob VARCHAR(20) NULL,
+    foreignMatterValue VARCHAR(100) NULL,
+    flavourValue VARCHAR(100) NULL,
+    cobValue VARCHAR(100) NULL,
+    ammoniumSulphate VARCHAR(20) NULL,
+    detergent VARCHAR(20) NULL,
+    glucose VARCHAR(20) NULL,
+    melamine VARCHAR(20) NULL,
+    salt VARCHAR(20) NULL,
+    sodiumCarbonate VARCHAR(20) NULL,
+    sodiumCitrate VARCHAR(20) NULL,
+    sorbitol VARCHAR(20) NULL,
+    starch VARCHAR(20) NULL,
+    sucrose VARCHAR(20) NULL,
+    urea VARCHAR(20) NULL,
+    vegetableOils VARCHAR(20) NULL,
+    formaldehyde VARCHAR(20) NULL,
+    maltodextrin VARCHAR(20) NULL,
+    sodiumIonPPM VARCHAR(20) NULL,
+    ammoniumSulphateValue VARCHAR(100) NULL,
+    detergentValue VARCHAR(100) NULL,
+    glucoseValue VARCHAR(100) NULL,
+    melamineValue VARCHAR(100) NULL,
+    saltValue VARCHAR(100) NULL,
+    sodiumCarbonateValue VARCHAR(100) NULL,
+    sodiumCitrateValue VARCHAR(100) NULL,
+    sorbitolValue VARCHAR(100) NULL,
+    starchValue VARCHAR(100) NULL,
+    sucroseValue VARCHAR(100) NULL,
+    ureaValue VARCHAR(100) NULL,
+    vegetableOilsValue VARCHAR(100) NULL,
+    formaldehydeValue VARCHAR(100) NULL,
+    maltodextrinValue VARCHAR(100) NULL,
     skipped TINYINT(1) DEFAULT 0,
     testedBy VARCHAR(150) NULL,
     testedById VARCHAR(50) NULL,

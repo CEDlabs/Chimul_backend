@@ -3,6 +3,7 @@ const SampleCollection = require("../models/sampleCollectionModel");
 const Vehicle = require("../models/vehicleModel");
 const VehicleCatalog = require("../models/vehicleCatalogModel");
 const AlternativeVehicle = require("../models/alternativeVehicleModel");
+const { notifyWeighbridgeForSampleCollection } = require("../utils/notifications");
 
 const getTodayISO = () => new Date().toISOString().slice(0, 10);
 
@@ -30,6 +31,14 @@ exports.create = async (req, res) => {
             sampleCollectedBy: req.session?.user?.employeeName || req.body.sampleCollectedBy,
             sampleCollectedByEmpId: req.session?.user?.employeeId || req.body.sampleCollectedByEmpId,
         });
+
+        // Notify weighbridge team about sample collection completion
+        try {
+            await notifyWeighbridgeForSampleCollection({ ...req.body, id: result.id, compartments: req.body.compartments });
+        } catch (notifyErr) {
+            console.error("Failed to send sample collection notification:", notifyErr);
+        }
+
         res.status(201).json({ success: true, message: "Sample collection saved successfully.", data: result });
     } catch (error) {
         const isDuplicate = error.message && error.message.includes("already exists");

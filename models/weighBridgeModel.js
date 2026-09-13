@@ -3,13 +3,13 @@ const AuditLog = require("./auditLogModel");
 const AlternativeVehicle = require("./alternativeVehicleModel");
 const { ensureSearchIndexes, normalizePlate, freeText } = require("../utils/searchIndexes");
 
-const dayRange = (offset = 0) => {
-    const start = new Date();
-    start.setHours(0, 0, 0, 0);
-    start.setDate(start.getDate() + offset);
-    const end = new Date(start);
-    end.setDate(end.getDate() + 1);
-    return { start, end };
+// Calendar "today" in the server's local time zone, as a YYYY-MM-DD string.
+// Used for date-window lookups (alternative vehicles). The day-boundary
+// duplicate checks themselves use CURDATE() on the DB server so they are
+// judged purely on the saved date, not on a UTC-shifted timestamp.
+const localToday = () => {
+    const now = new Date();
+    return new Date(now.getTime() - now.getTimezoneOffset() * 60000).toISOString().slice(0, 10);
 };
 
 const generateWBId = () =>
@@ -191,7 +191,12 @@ exports.saveTare = async (wbEntryId, tareWeight, mode) => {
         [tare, netWeight, mode || "Manual", wbEntryId]
     );
 
-    return { wbEntryId, tareWeight: tare, grossWeight: gross, netWeight };
+    const updated = await pool.execute(
+        "SELECT * FROM WeighBridgeEntries WHERE wbEntryId = ?",
+        [wbEntryId]
+    );
+
+    return updated[0] || { wbEntryId, tareWeight: tare, grossWeight: gross, netWeight };
 };
 
 exports.findActive = async (vehicleNumber) => {
@@ -199,22 +204,21 @@ exports.findActive = async (vehicleNumber) => {
     await ensureWBTable(pool);
     await ensureSearchIndexes(pool);
 
-    const numbers = await expandVehicleNumbers(vehicleNumber, new Date().toISOString().slice(0, 10));
+    const numbers = await expandVehicleNumbers(vehicleNumber, localToday());
     if (numbers.length === 0) return null;
     const keys = numbers.map(normalizePlate).filter(Boolean);
     const placeholders = numbers.map(() => "?").join(",");
     const keyPlaceholders = keys.map(() => "?").join(",");
-    const { start } = dayRange();
 
     const result = await pool.execute(
         `SELECT * FROM WeighBridgeEntries
          WHERE (UPPER(vehicleNumber) IN (${placeholders}) OR vehKey IN (${keyPlaceholders}))
            AND status IN ('Intermediate', 'TarePending')
            AND (isDeleted IS NULL OR isDeleted = 0)
-           AND createdAt >= ?
+           AND DATE(createdAt) = CURDATE()
          ORDER BY createdAt DESC
          LIMIT 1`,
-        [...numbers, ...keys, start]
+        [...numbers, ...keys]
     );
 
     return result[0] || null;
@@ -225,12 +229,11 @@ exports.findTodayCompleted = async (vehicleNumber) => {
     await ensureWBTable(pool);
     await ensureSearchIndexes(pool);
 
-    const numbers = await expandVehicleNumbers(vehicleNumber, new Date().toISOString().slice(0, 10));
+    const numbers = await expandVehicleNumbers(vehicleNumber, localToday());
     if (numbers.length === 0) return null;
     const keys = numbers.map(normalizePlate).filter(Boolean);
     const placeholders = numbers.map(() => "?").join(",");
     const keyPlaceholders = keys.map(() => "?").join(",");
-    const { start } = dayRange();
 
     const result = await pool.execute(
         `SELECT wbEntryId, vehicleNumber, grossWeight, tareWeight, netWeight, status, createdAt
@@ -238,10 +241,10 @@ exports.findTodayCompleted = async (vehicleNumber) => {
          WHERE (UPPER(vehicleNumber) IN (${placeholders}) OR vehKey IN (${keyPlaceholders}))
            AND status = 'Completed'
            AND (isDeleted IS NULL OR isDeleted = 0)
-           AND createdAt >= ?
+           AND DATE(createdAt) = CURDATE()
          ORDER BY createdAt DESC
          LIMIT 1`,
-        [...numbers, ...keys, start]
+        [...numbers, ...keys]
     );
 
     return result[0] || null;

@@ -1,6 +1,7 @@
 const { validationResult } = require("express-validator");
 const GateEntry = require("../models/gateEntryModel");
 const AuditLog = require("../models/auditLogModel");
+const { notifyWeighbridgeForGateEntry } = require("../utils/notifications");
 
 exports.createGateEntry = async (req, res) => {
     try {
@@ -27,6 +28,13 @@ exports.createGateEntry = async (req, res) => {
         }
 
         const result = await GateEntry.create(req.body);
+
+        // Notify weighbridge team about new gate entry
+        try {
+            await notifyWeighbridgeForGateEntry({ ...req.body, id: result.id });
+        } catch (notifyErr) {
+            console.error("Failed to send gate entry notification:", notifyErr);
+        }
 
         res.status(201).json({
             success: true,

@@ -31,6 +31,29 @@ const round2 = (n) => (n === null || n === undefined ? null : Math.round(n * 100
 
 const sum = (arr) => arr.reduce((a, b) => a + (b || 0), 0);
 
+const computeTotals = (rows) => {
+    const t = {
+        tankerQuantity: round2(sum(rows.map((r) => r.tankerQuantity))),
+        truckSheetQuantity: round2(sum(rows.map((r) => r.truckSheetQuantity))),
+        difference: round2(sum(rows.map((r) => r.difference))),
+        afterDeduction: round2(sum(rows.map((r) => r.afterDeduction))),
+        differenceAfterDeduction: round2(sum(rows.map((r) => r.differenceAfterDeduction))),
+        tankerKgFat: round2(sum(rows.map((r) => r.tankerKgFat))),
+        tankerKgSnf: round2(sum(rows.map((r) => r.tankerKgSnf))),
+        truckKgFat: round2(sum(rows.map((r) => r.truckKgFat))),
+        truckKgSnf: round2(sum(rows.map((r) => r.truckKgSnf))),
+        differenceKgFat: round2(sum(rows.map((r) => r.differenceKgFat))),
+        differenceKgSnf: round2(sum(rows.map((r) => r.differenceKgSnf))),
+    };
+    t.tankerFat = t.tankerQuantity > 0 ? round2((t.tankerKgFat / t.tankerQuantity) * 100) : 0;
+    t.tankerSnf = t.tankerQuantity > 0 ? round2((t.tankerKgSnf / t.tankerQuantity) * 100) : 0;
+    t.truckFat = t.truckSheetQuantity > 0 ? round2((t.truckKgFat / t.truckSheetQuantity) * 100) : 0;
+    t.truckSnf = t.truckSheetQuantity > 0 ? round2((t.truckKgSnf / t.truckSheetQuantity) * 100) : 0;
+    t.alcohol = avgNullable(rows.map((r) => r.alcohol));
+    t.vehicleCount = rows.length;
+    return t;
+};
+
 const TALUK_BY_ROUTE = {
     "7B": "Sidlaghatta", "8B": "Sidlaghatta", "9B": "Sidlaghatta", "10B": "Sidlaghatta",
     "11B": "Sidlaghatta", "12B": "Chintamani", "14B": "Chintamani", "18B": "Gauribidanur",
@@ -218,28 +241,7 @@ exports.getDailyReport = async (dates, routes) => {
         });
     };
 
-    const buildDayTotals = (rows) => {
-        const t = {
-            tankerQuantity: round2(sum(rows.map((r) => r.tankerQuantity))),
-            truckSheetQuantity: round2(sum(rows.map((r) => r.truckSheetQuantity))),
-            difference: round2(sum(rows.map((r) => r.difference))),
-            afterDeduction: round2(sum(rows.map((r) => r.afterDeduction))),
-            differenceAfterDeduction: round2(sum(rows.map((r) => r.differenceAfterDeduction))),
-            tankerKgFat: round2(sum(rows.map((r) => r.tankerKgFat))),
-            tankerKgSnf: round2(sum(rows.map((r) => r.tankerKgSnf))),
-            truckKgFat: round2(sum(rows.map((r) => r.truckKgFat))),
-            truckKgSnf: round2(sum(rows.map((r) => r.truckKgSnf))),
-            differenceKgFat: round2(sum(rows.map((r) => r.differenceKgFat))),
-            differenceKgSnf: round2(sum(rows.map((r) => r.differenceKgSnf))),
-        };
-        t.tankerFat = t.tankerQuantity > 0 ? round2((t.tankerKgFat / t.tankerQuantity) * 100) : 0;
-        t.tankerSnf = t.tankerQuantity > 0 ? round2((t.tankerKgSnf / t.tankerQuantity) * 100) : 0;
-        t.truckFat = t.truckSheetQuantity > 0 ? round2((t.truckKgFat / t.truckSheetQuantity) * 100) : 0;
-        t.truckSnf = t.truckSheetQuantity > 0 ? round2((t.truckKgSnf / t.truckSheetQuantity) * 100) : 0;
-        t.alcohol = avgNullable(rows.map((r) => r.alcohol));
-        t.vehicleCount = rows.length;
-        return t;
-    };
+    const buildDayTotals = (rows) => computeTotals(rows);
 
     const days = dateList.map((day) => {
         const rows = buildDayRows(day);
@@ -428,4 +430,316 @@ exports.getFortnightReport = async (startDate, endDate) => {
     };
 
     return { startDate: start, endDate: end, days, grandTotals };
+};
+
+exports.getTalukReport = async (dates, taluks) => {
+    const pool = await connectDB();
+
+    const dateList = (dates || "").split(",").map((d) => dayString(d)).filter(Boolean);
+    if (dateList.length === 0) throw new Error("Valid date(s) required.");
+
+    const normalizeTaluk = (s) => String(s || "").trim().toLowerCase();
+    const routeKey = (r) => String(r || "").trim().toUpperCase();
+    const stripZeros = (r) => routeKey(r).replace(/^0+/, "");
+
+    // Selected taluks (keep original casing for display).
+    const selected = (taluks || "").split(",").map((s) => String(s || "").trim()).filter(Boolean);
+    const selectedNorm = selected.map(normalizeTaluk);
+    if (selectedNorm.length === 0) throw new Error("Select at least one taluk.");
+
+    // Taluk-wise route links maintained in the Laboratory taluk master.
+    const linkRows = await pool.execute(
+        "SELECT routeName, talukName FROM TalukRoutes"
+    ).catch(() => []);
+    const linkMap = {};
+    for (const r of linkRows || []) {
+        if (r.routeName && String(r.talukName || "").trim()) {
+            linkMap[routeKey(r.routeName)] = String(r.talukName).trim();
+        }
+    }
+
+    // Live route→taluk mapping from the Routes master (user managed).
+    const dbRows = await pool.execute(
+        "SELECT routeName, taluk FROM Routes WHERE (isDeleted IS NULL OR isDeleted = 0)"
+    ).catch(() => []);
+    const dbMap = {};
+    for (const r of dbRows || []) {
+        if (r.routeName && String(r.taluk || "").trim()) {
+            dbMap[routeKey(r.routeName)] = String(r.taluk).trim();
+        }
+    }
+
+    const resolveTaluk = (route) => {
+        const key = routeKey(route);
+        if (!key) return "";
+        if (linkMap[key]) return linkMap[key];
+        if (dbMap[key]) return dbMap[key];
+        return TALUK_BY_ROUTE[key] || TALUK_BY_ROUTE[stripZeros(key)] || "";
+    };
+
+    // Collect the route set per selected taluk.
+    const routeSources = new Set([
+        ...(linkRows || []).map((r) => routeKey(r.routeName)).filter(Boolean),
+        ...(dbRows || []).map((r) => routeKey(r.routeName)).filter(Boolean),
+        ...Object.keys(TALUK_BY_ROUTE),
+    ]);
+    const talukDefs = new Map(); // normalized → { name(display), routes: Set }
+    for (const norm of selectedNorm) {
+        if (!talukDefs.has(norm)) {
+            talukDefs.set(norm, { key: norm, name: norm, routes: new Set() });
+        }
+    }
+
+    const allRouteSet = new Set();
+    for (const route of routeSources) {
+        const taluk = resolveTaluk(route);
+        const norm = normalizeTaluk(taluk);
+        if (selectedNorm.includes(norm) && route) {
+            const def = talukDefs.get(norm);
+            if (def) {
+                def.name = taluk || def.name;
+                def.routes.add(route);
+                allRouteSet.add(route);
+            }
+        }
+    }
+
+    const defList = Array.from(talukDefs.values());
+
+    // Per-route rows (each route in the selected taluk is its own row).
+    const routeRows = (dailyRows) =>
+        (dailyRows || []).map((r) => ({
+            ...r,
+            taluk: resolveTaluk(r.route) || r.taluk || "",
+            talukCode: resolveTaluk(r.route) || r.talukCode || r.taluk || "",
+        }));
+
+    if (allRouteSet.size === 0) {
+        const days = dateList.map((day) => ({
+            date: day,
+            rows: [],
+            totals: computeTotals([]),
+            routeCount: 0,
+        }));
+        return { dates: dateList, days, routeCount: 0, taluks: defList.map((d) => d.name), empty: true };
+    }
+
+    const routesCsv = Array.from(allRouteSet).sort((a, b) => a.localeCompare(b, undefined, { numeric: true })).join(",");
+    const daily = await exports.getDailyReport(dateList.join(","), routesCsv);
+
+    const days = (daily.days || []).map((day) => ({
+        date: day.date,
+        rows: routeRows(day.rows),
+        totals: day.totals || computeTotals(day.rows || []),
+        routeCount: (day.rows || []).length,
+    }));
+
+    return { dates: dateList, days, routeCount: allRouteSet.size, taluks: defList.map((d) => d.name) };
+};
+
+/* ==========================================================
+   EXTRA REPORT — BMC Tankers & Truck Sheet Quality Report
+   Per-route: tanker qty (front/back/total), truck sheet qty,
+   weight diff, alcohol (front/back), temp, quality fat/snf
+   (front/back) pulled from LaboratoryTests + CompartmentTests
+   + WeighBridgeEntries + MilkCollections.
+========================================================== */
+
+exports.getExtraReport = async (dates, routes) => {
+    const pool = await connectDB();
+
+    const dateList = (dates || "").split(",").map((d) => dayString(d)).filter(Boolean);
+    if (dateList.length === 0) throw new Error("Valid date(s) required.");
+
+    const selectedRoutes = (routes || "").split(",").map((r) => String(r || "").trim().toUpperCase()).filter(Boolean);
+    const hasRouteFilter = selectedRoutes.length > 0;
+
+    const placeholders = dateList.map(() => "?").join(",");
+
+    const [wbResult, mcResult, labResult, lctResult] = await Promise.all([
+        pool.execute(
+            `SELECT vehicleNumber, routeName, netWeight, ${sql.dateFormat("createdAt", "%Y-%m-%d")} AS day
+             FROM WeighBridgeEntries
+             WHERE ${sql.dateFormat("createdAt", "%Y-%m-%d")} IN (${placeholders})
+               AND netWeight IS NOT NULL`,
+            dateList
+        ),
+        pool.execute(
+            `SELECT vehicleNumber, routeNo,
+                    eveningKg, morningKg, eveningFat, eveningSNF, morningFat, morningSNF,
+                    ${sql.dateFormat("reportDate", "%Y-%m-%d")} AS day
+             FROM MilkCollections
+             WHERE ${sql.dateFormat("reportDate", "%Y-%m-%d")} IN (${placeholders})`,
+            dateList
+        ),
+        pool.execute(
+            `SELECT labTestId, vehicleNumber, routeNo, taluk, temperature, clr, fat, snf, alcohol,
+                    kgFat, kgSnf, totalKgFat, totalKgSNF, testedByName,
+                    ${sql.dateFormat("testedAt", "%Y-%m-%d")} AS day
+             FROM LaboratoryTests
+             WHERE ${sql.dateFormat("testedAt", "%Y-%m-%d")} IN (${placeholders})`,
+            dateList
+        ),
+        pool.execute(
+            `SELECT lct.labTestId, lct.vehicleNumber, lct.compartment,
+                    lct.temperature, lct.fat, lct.snf, lct.alcohol,
+                    ${sql.dateFormat("lt.testedAt", "%Y-%m-%d")} AS day
+             FROM LaboratoryCompartmentTests lct
+             JOIN LaboratoryTests lt ON lt.labTestId = lct.labTestId
+             WHERE ${sql.dateFormat("lt.testedAt", "%Y-%m-%d")} IN (${placeholders})`,
+            dateList
+        ),
+    ]);
+
+    const routeKey = (value) => String(value || "").trim().toUpperCase();
+    const isSelected = (key) => !hasRouteFilter || selectedRoutes.includes(key);
+
+    const groupByDay = (records) => {
+        const map = new Map();
+        for (const r of records) {
+            if (!r.day) continue;
+            if (!map.has(r.day)) map.set(r.day, []);
+            map.get(r.day).push(r);
+        }
+        return map;
+    };
+
+    const wbByDay = groupByDay(wbResult);
+    const mcByDay = groupByDay(mcResult);
+    const labByDay = groupByDay(labResult);
+    const lctByDay = groupByDay(lctResult);
+
+    const allKeys = (hasRouteFilter ? selectedRoutes : ROUTES)
+        .slice()
+        .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+
+    const buildDayRows = (day) => {
+        const wbs = wbByDay.get(day) || [];
+        const mcs = mcByDay.get(day) || [];
+        const labs = labByDay.get(day) || [];
+        const lcts = lctByDay.get(day) || [];
+
+        // Weigh bridge: one entry per vehicle/route → tanker total
+        const wbByVehicle = new Map();
+        for (const w of wbs) {
+            const key = routeKey(w.routeName);
+            if (!key || !isSelected(key)) continue;
+            const entry = wbByVehicle.get(key) || { netTotal: 0, vehicles: [] };
+            entry.netTotal += toNum(w.netWeight) || 0;
+            if (w.vehicleNumber && !entry.vehicles.includes(w.vehicleNumber)) entry.vehicles.push(w.vehicleNumber);
+            wbByVehicle.set(key, entry);
+        }
+
+        // Milk collections: accumulate per route → truck sheet quantities
+        const mcByRoute = new Map();
+        for (const m of mcs) {
+            const key = routeKey(m.routeNo);
+            if (!key || !isSelected(key)) continue;
+            const entry = mcByRoute.get(key) || { kg: 0, evFat: [], moFat: [], evSnf: [], moSnf: [], count: 0 };
+            const evKg = toNum(m.eveningKg) || 0;
+            const moKg = toNum(m.morningKg) || 0;
+            entry.kg += evKg + moKg;
+            if (toNum(m.eveningFat) !== null && evKg > 0) entry.evFat.push({ val: toNum(m.eveningFat), kg: evKg });
+            if (toNum(m.morningFat) !== null && moKg > 0) entry.moFat.push({ val: toNum(m.morningFat), kg: moKg });
+            if (toNum(m.eveningSNF) !== null && evKg > 0) entry.evSnf.push({ val: toNum(m.eveningSNF), kg: evKg });
+            if (toNum(m.morningSNF) !== null && moKg > 0) entry.moSnf.push({ val: toNum(m.morningSNF), kg: moKg });
+            entry.count += 1;
+            mcByRoute.set(key, entry);
+        }
+
+        // Lab tests: overall per route
+        const labByRoute = new Map();
+        for (const l of labs) {
+            const key = routeKey(l.routeNo);
+            if (!key || !isSelected(key)) continue;
+            const entry = labByRoute.get(key) || { taluk: "", eoName: "", temps: [], fats: [], snfs: [], alcohols: [] };
+            if (l.taluk && !entry.taluk) entry.taluk = l.taluk;
+            if (l.testedByName && !entry.eoName) entry.eoName = l.testedByName;
+            entry.temps.push(toNum(l.temperature));
+            entry.fats.push(toNum(l.fat));
+            entry.snfs.push(toNum(l.snf));
+            entry.alcohols.push(toNum(l.alcohol));
+            labByRoute.set(key, entry);
+        }
+
+        // Compartment tests: front/back fat/snf/alcohol/temp
+        const compByRoute = new Map();
+        for (const c of lcts) {
+            const lt = labs.find((l) => l.labTestId === c.labTestId);
+            const key = lt ? routeKey(lt.routeNo) : "";
+            if (!key || !isSelected(key)) continue;
+            const entry = compByRoute.get(key) || { front: {}, back: {} };
+            const compartment = String(c.compartment || "").toLowerCase();
+            if (compartment === "front" || compartment === "back") {
+                entry[compartment] = {
+                    fat: toNum(c.fat),
+                    snf: toNum(c.snf),
+                    alcohol: toNum(c.alcohol),
+                    temp: toNum(c.temperature),
+                };
+            }
+            compByRoute.set(key, entry);
+        }
+
+        return allKeys.map((route, index) => {
+            const wb = wbByVehicle.get(route) || { netTotal: 0, vehicles: [] };
+            const mc = mcByRoute.get(route) || { kg: 0, evFat: [], moFat: [], evSnf: [], moSnf: [], count: 0 };
+            const lab = labByRoute.get(route) || { taluk: "", eoName: "", temps: [], fats: [], snfs: [], alcohols: [] };
+            const comp = compByRoute.get(route) || { front: {}, back: {} };
+
+            const taluk = TALUK_BY_ROUTE[route] || lab.taluk || "";
+
+            const hasData = wb.netTotal > 0 || mc.kg > 0 || lab.temps.length > 0;
+
+            if (!hasData) {
+                return {
+                    slNo: index + 1, route, taluk, eoName: "",
+                    tankerFront: null, tankerBack: null, tankerTotal: null,
+                    truckSheetWeight: null, weightDiff: null,
+                    alcoholFront: null, alcoholBack: null,
+                    temperature: null,
+                    frontFat: null, frontSnf: null,
+                    backFat: null, backSnf: null,
+                };
+            }
+
+            const tankerTotal = round2(wb.netTotal);
+            const truckSheetWeight = round2(mc.kg);
+            const weightDiff = (tankerTotal !== null && truckSheetWeight !== null) ? round2(truckSheetWeight - tankerTotal) : null;
+
+            return {
+                slNo: index + 1, route, taluk,
+                eoName: lab.eoName || "",
+                tankerFront: null,
+                tankerBack: null,
+                tankerTotal,
+                truckSheetWeight,
+                weightDiff,
+                alcoholFront: comp.front.alcohol ?? null,
+                alcoholBack: comp.back.alcohol ?? null,
+                temperature: avgNullable(lab.temps) ?? comp.front.temp ?? comp.back.temp ?? null,
+                frontFat: comp.front.fat ?? null,
+                frontSnf: comp.front.snf ?? null,
+                backFat: comp.back.fat ?? null,
+                backSnf: comp.back.snf ?? null,
+            };
+        });
+    };
+
+    const days = dateList.map((day) => {
+        const rows = buildDayRows(day);
+        const totals = {
+            tankerTotal: round2(sum(rows.map((r) => r.tankerTotal))),
+            truckSheetWeight: round2(sum(rows.map((r) => r.truckSheetWeight))),
+            weightDiff: round2(sum(rows.map((r) => r.weightDiff))),
+            avgTemp: avgNullable(rows.map((r) => r.temperature)),
+            avgFrontFat: avgNullable(rows.map((r) => r.frontFat)),
+            avgFrontSnf: avgNullable(rows.map((r) => r.frontSnf)),
+            avgBackFat: avgNullable(rows.map((r) => r.backFat)),
+            avgBackSnf: avgNullable(rows.map((r) => r.backSnf)),
+        };
+        return { date: day, rows, totals, routeCount: rows.length };
+    });
+
+    return { dates: dateList, days, routeCount: allKeys.length };
 };

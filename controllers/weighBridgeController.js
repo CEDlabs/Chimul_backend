@@ -1,4 +1,5 @@
 const WB = require("../models/weighBridgeModel");
+const { notifySampleAndLabForWeighbridge } = require("../utils/notifications");
 
 const getUserInfo = (req) => ({
     createdByName: req.session?.user?.employeeName || req.body.createdByName || "",
@@ -43,6 +44,14 @@ exports.saveTare = async (req, res) => {
         const { tareWeight, captureMode } = req.body;
         if (!tareWeight) return res.status(400).json({ success: false, message: "tareWeight is required." });
         const result = await WB.saveTare(wbEntryId, tareWeight, captureMode);
+
+        // Notify sample collection and laboratory teams
+        try {
+            await notifySampleAndLabForWeighbridge(result);
+        } catch (notifyErr) {
+            console.error("Failed to send weighbridge notification:", notifyErr);
+        }
+
         res.json({ success: true, message: "Tare weight saved. Entry completed.", data: result });
     } catch (err) {
         console.error("WB Tare Error:", err);

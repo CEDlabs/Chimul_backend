@@ -1,9 +1,10 @@
 const express = require("express");
 const { body } = require("express-validator");
 const authMiddleware = require("../middleware/authMiddleware");
-const { canManage } = require("../middleware/authorizeMiddleware");
+const { canManage, canAccess } = require("../middleware/authorizeMiddleware");
 const laboratoryTestController = require("../controllers/laboratoryTestController");
 const laboratoryReportController = require("../controllers/laboratoryReportController");
+const talukController = require("../controllers/talukController");
 
 const router = express.Router();
 
@@ -28,5 +29,16 @@ router.get("/records", authMiddleware, laboratoryTestController.getAll);
 router.get("/reports/routes", authMiddleware, laboratoryReportController.getRoutes);
 router.get("/reports/daily", authMiddleware, laboratoryReportController.getDaily);
 router.get("/reports/fortnight", authMiddleware, laboratoryReportController.getFortnight);
+router.get("/reports/taluk", authMiddleware, laboratoryReportController.getTaluk);
+router.get("/reports/extra", authMiddleware, laboratoryReportController.getExtra);
+
+// Taluk master (reads for any authenticated user; writes for any Laboratory
+// department user or Admin/Management, so the lab can maintain taluk→route maps).
+router.get("/taluks", authMiddleware, talukController.list);
+router.post("/taluks", authMiddleware, canAccess(["laboratory", "laboratory1"]), talukController.create);
+router.put("/taluks/:id", authMiddleware, canAccess(["laboratory", "laboratory1"]), talukController.update);
+router.delete("/taluks/:id", authMiddleware, canAccess(["laboratory", "laboratory1"]), talukController.remove);
+router.get("/taluks/:talukName/routes", authMiddleware, talukController.getRoutes);
+router.put("/taluks/:talukName/routes", authMiddleware, canAccess(["laboratory", "laboratory1"]), talukController.assignRoutes);
 
 module.exports = router;

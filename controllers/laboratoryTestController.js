@@ -1,5 +1,6 @@
 const { validationResult } = require("express-validator");
 const LaboratoryTest = require("../models/laboratoryTestModel");
+const { notifyWeighbridgeForLaboratory } = require("../utils/notifications");
 
 exports.create = async (req, res) => {
     const errors = validationResult(req);
@@ -27,6 +28,14 @@ exports.create = async (req, res) => {
             testedByName: req.session?.user?.employeeName || req.body.testedByName,
             testedByEmpId: req.session?.user?.employeeId || req.body.testedByEmpId,
         });
+
+        // Notify weighbridge team about lab test completion
+        try {
+            await notifyWeighbridgeForLaboratory({ ...req.body, id: result.id, compartments: req.body.compartments });
+        } catch (notifyErr) {
+            console.error("Failed to send laboratory notification:", notifyErr);
+        }
+
         res.status(201).json({ success: true, message: "Laboratory test saved successfully.", data: result });
     } catch (error) {
         const status = error.number === 2627 || error.number === 2601 ? 409 : 500;
@@ -38,7 +47,7 @@ exports.update = async (req, res) => {
     try {
         const user = req.session?.user || null;
         const department = (user?.department || "").trim().toLowerCase();
-        if (!["admin", "management"].includes(department)) {
+        if (!["admin", "management", "laboratory", "laboratory1"].includes(department)) {
             return res.status(403).json({ success: false, message: "Only admin/management can update lab test records." });
         }
         const result = await LaboratoryTest.update(req.params.id, req.body);
@@ -52,7 +61,7 @@ exports.remove = async (req, res) => {
     try {
         const user = req.session?.user || null;
         const department = (user?.department || "").trim().toLowerCase();
-        if (!["admin", "management"].includes(department)) {
+        if (!["admin", "management", "laboratory", "laboratory1"].includes(department)) {
             return res.status(403).json({ success: false, message: "Only admin/management can delete lab test records." });
         }
         const ipAddress = req.ip || req.connection?.remoteAddress || null;
