@@ -99,6 +99,19 @@ const ensureCreatedByDetailColumns = async (pool) => {
     }
 };
 
+const ensureAllocationDateColumn = async (pool) => {
+    try {
+        const cols = await pool.execute(
+            "SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = 'GateEntries' AND COLUMN_NAME = 'allocationDate'"
+        );
+        if (cols.length === 0) {
+            await pool.execute("ALTER TABLE GateEntries ADD COLUMN allocationDate VARCHAR(20) NULL");
+        }
+    } catch (e) {
+        console.warn("[GateEntries] allocationDate column migration warning:", e.message);
+    }
+};
+
 const extractUserDetails = (createdBy) => {
     let createdByInt = null;
     let createdByName = null;
@@ -158,8 +171,9 @@ exports.create = async (data) => {
          (gateEntryId, entryDateTime, vehicleStatus, vehicleNumber, vehicleType,
           driverName, driverMobile, supplierName, materialType, routeName,
           sealNumbers, sealStatus, spinnerSet, tyre, jack, otherItems,
-          createdBy, createdByName, createdByEmpId, createdByEmail, createdByDept)
-         VALUES (?, ?, 'Gate Entered', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          createdBy, createdByName, createdByEmpId, createdByEmail, createdByDept,
+          allocationDate)
+         VALUES (?, ?, 'Gate Entered', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
             data.gateEntryId,
             entryDate,
@@ -181,6 +195,7 @@ exports.create = async (data) => {
             createdByEmpId,
             createdByEmail,
             createdByDept,
+            data.allocationDate || null,
         ]
     );
 
@@ -216,7 +231,7 @@ exports.getAll = async ({ startDate, endDate, search } = {}) => {
             ge.routeName, ge.sealNumbers, ge.sealStatus, ge.spinnerSet,
             ge.tyre, ge.jack, ge.otherItems, ge.createdBy, ge.createdByName,
             ge.createdByEmpId, ge.createdByEmail, ge.createdByDept,
-            ge.createdAt, ge.updatedAt
+            ge.createdAt, ge.updatedAt, ge.allocationDate
         FROM GateEntries ge
         WHERE 1 = 1 AND (ge.isDeleted IS NULL OR ge.isDeleted = 0)
     `;
@@ -319,8 +334,9 @@ exports.getRecent = async ({ startDate, endDate, limit = 5 } = {}) => {
 
 exports.checkDuplicates = async ({ vehicleNumber, routeName, sealNumbers, date }) => {
     const pool = await connectDB();
-    await ensureSoftDeleteColumns(pool);
+    await ensureRouteColumn(pool);
     await ensureCreatedByDetailColumns(pool);
+    await ensureAllocationDateColumn(pool);
     await ensureSearchIndexes(pool);
 
     const result = {
@@ -536,6 +552,7 @@ exports.update = async (id, data) => {
     const pool = await connectDB();
     await ensureRouteColumn(pool);
     await ensureCreatedByDetailColumns(pool);
+    await ensureAllocationDateColumn(pool);
     await ensureSearchIndexes(pool);
 
     const lookupResult = await pool.execute(
@@ -572,7 +589,7 @@ exports.update = async (id, data) => {
             driverName = ?, driverMobile = ?, supplierName = ?, materialType = ?,
             routeName = ?, sealNumbers = ?, sealStatus = ?,
             spinnerSet = ?, tyre = ?, jack = ?, otherItems = ?,
-            entryDateTime = ?, updatedAt = ?
+            entryDateTime = ?, allocationDate = ?, updatedAt = ?
          WHERE gateEntryId = ?`,
         [
             data.vehicleStatus || existing.vehicleStatus,
@@ -590,6 +607,7 @@ exports.update = async (id, data) => {
             jackVal,
             data.otherItems !== undefined ? data.otherItems : existing.otherItems,
             entryDate,
+            data.allocationDate || existing.allocationDate || null,
             now,
             existing.gateEntryId
         ]

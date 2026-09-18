@@ -7,8 +7,12 @@ async function ensureBMCTable(pool) {
             CREATE TABLE IF NOT EXISTS BMCs (
                 id INT ${sql.autoIncrement} PRIMARY KEY,
                 routeName VARCHAR(100) NULL,
+                taluk VARCHAR(100) NULL,
                 bmcCode VARCHAR(50) NULL,
                 bmcName VARCHAR(150) NULL,
+                rtCd VARCHAR(100) NULL,
+                bmcType VARCHAR(10) NULL,
+                capacity VARCHAR(50) NULL,
                 createdByName VARCHAR(100) NULL,
                 createdByEmpId VARCHAR(50) NULL,
                 createdByEmail VARCHAR(150) NULL,
@@ -28,26 +32,17 @@ async function ensureBMCTable(pool) {
         console.warn("[BMCs] Table creation warning:", e.message);
     }
 
-    try {
-        const colCheck = await pool.execute(
-            "SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = 'BMCs' AND COLUMN_NAME = 'updatedByName'"
-        );
-        if (colCheck.length === 0) {
-            await pool.execute("ALTER TABLE BMCs ADD COLUMN updatedByName VARCHAR(100) NULL");
-        }
-    } catch (e) {
-        console.warn("[BMCs] updatedByName migration warning:", e.message);
-    }
-
-    try {
-        const colCheck = await pool.execute(
-            "SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = 'BMCs' AND COLUMN_NAME = 'updatedByEmpId'"
-        );
-        if (colCheck.length === 0) {
-            await pool.execute("ALTER TABLE BMCs ADD COLUMN updatedByEmpId VARCHAR(50) NULL");
-        }
-    } catch (e) {
-        console.warn("[BMCs] updatedByEmpId migration warning:", e.message);
+    // Best-effort migrations for existing databases.
+    const migrations = [
+        "ALTER TABLE BMCs ADD COLUMN updatedByName VARCHAR(100) NULL",
+        "ALTER TABLE BMCs ADD COLUMN updatedByEmpId VARCHAR(50) NULL",
+        "ALTER TABLE BMCs ADD COLUMN taluk VARCHAR(100) NULL",
+        "ALTER TABLE BMCs ADD COLUMN rtCd VARCHAR(100) NULL",
+        "ALTER TABLE BMCs ADD COLUMN bmcType VARCHAR(10) NULL",
+        "ALTER TABLE BMCs ADD COLUMN capacity VARCHAR(50) NULL",
+    ];
+    for (const stmt of migrations) {
+        try { await pool.execute(stmt); } catch (_) {}
     }
 }
 
@@ -161,16 +156,20 @@ exports.create = async (data, user = null) => {
 
     const result = await pool.execute(
         `INSERT INTO BMCs
-         (routeName, bmcCode, bmcName, createdByName, createdByEmpId, createdByEmail, createdByDept)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`,
-        [routeName, bmcCode, bmcName, name, empId, email, dept]
+         (routeName, taluk, bmcCode, bmcName, rtCd, bmcType, capacity, createdByName, createdByEmpId, createdByEmail, createdByDept)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [routeName, data.taluk || null, bmcCode, bmcName, data.rtCd || null, data.bmcType || null, data.capacity || null, name, empId, email, dept]
     );
 
     return {
         id: result.insertId,
         routeName,
+        taluk: data.taluk || null,
         bmcCode,
         bmcName,
+        rtCd: data.rtCd || null,
+        bmcType: data.bmcType || null,
+        capacity: data.capacity || null,
         createdByName: name,
         createdByEmpId: empId,
         createdByEmail: email,
@@ -195,8 +194,12 @@ exports.update = async (id, data, user = null) => {
 
     const existing = existingRows[0];
     const routeName = String(data.routeName !== undefined ? data.routeName : existing.routeName).trim();
+    const taluk = data.taluk !== undefined ? String(data.taluk).trim() : (existing.taluk || "");
     const bmcCode = clamp(data.bmcCode !== undefined ? data.bmcCode : existing.bmcCode, 50).trim();
     const bmcName = clamp(data.bmcName !== undefined ? data.bmcName : existing.bmcName, 150).trim();
+    const rtCd = data.rtCd !== undefined ? String(data.rtCd).trim() : (existing.rtCd || "");
+    const bmcType = data.bmcType !== undefined ? String(data.bmcType).trim() : (existing.bmcType || "");
+    const capacity = data.capacity !== undefined ? String(data.capacity).trim() : (existing.capacity || "");
 
     if (!routeName || !bmcCode || !bmcName) {
         const err = new Error("Route, BMC code and BMC name cannot be empty.");
@@ -236,16 +239,20 @@ exports.update = async (id, data, user = null) => {
     await pool.execute(
         `UPDATE BMCs SET
             routeName = ?,
+            taluk = ?,
             bmcCode = ?,
             bmcName = ?,
+            rtCd = ?,
+            bmcType = ?,
+            capacity = ?,
             updatedAt = ${sql.now()},
             updatedByName = ?,
             updatedByEmpId = ?
          WHERE id = ?`,
-        [routeName, bmcCode, bmcName, name, empId, bmcId]
+        [routeName, taluk || null, bmcCode, bmcName, rtCd || null, bmcType || null, capacity || null, name, empId, bmcId]
     );
 
-    return { id: bmcId, routeName, bmcCode, bmcName };
+    return { id: bmcId, routeName, taluk: taluk || null, bmcCode, bmcName, rtCd: rtCd || null, bmcType: bmcType || null, capacity: capacity || null };
 };
 
 exports.remove = async (id, user = null, ipAddress = null) => {

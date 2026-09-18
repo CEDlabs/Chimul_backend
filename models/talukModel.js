@@ -7,6 +7,7 @@ async function ensureTaluksTable(pool) {
             CREATE TABLE IF NOT EXISTS Taluks (
                 id INT ${sql.autoIncrement} PRIMARY KEY,
                 name VARCHAR(100) NOT NULL UNIQUE,
+                shortForm VARCHAR(50) NULL UNIQUE,
                 description VARCHAR(255) NULL,
                 createdAt DATETIME DEFAULT ${sql.now()},
                 updatedAt DATETIME DEFAULT ${sql.now()},
@@ -20,6 +21,10 @@ async function ensureTaluksTable(pool) {
     } catch (e) {
         console.warn("[Taluks] Table creation warning:", e.message);
     }
+
+    // Best-effort migrations for existing databases.
+    try { await pool.execute("ALTER TABLE Taluks ADD COLUMN shortForm VARCHAR(50) NULL"); } catch {}
+    try { await pool.execute("ALTER TABLE Taluks ADD UNIQUE INDEX uq_taluks_shortform (shortForm)"); } catch {}
 }
 
 // Junction of taluk -> routes. Holds every assigned route regardless of whether
@@ -97,11 +102,28 @@ exports.findByName = async (name) => {
     return normalizeRow(rows[0]);
 };
 
+exports.findByShortForm = async (shortForm) => {
+    const pool = await connectDB();
+    await ensureTaluksTable(pool);
+
+    const s = String(shortForm || "").trim();
+    if (!s) return null;
+
+    const rows = await pool.execute(
+        `SELECT * FROM Taluks
+         WHERE LOWER(TRIM(shortForm)) = LOWER(TRIM(?)) AND (isDeleted IS NULL OR isDeleted = 0)
+         LIMIT 1`,
+        [s]
+    );
+    return normalizeRow(rows[0]);
+};
+
 exports.create = async (data, user = null) => {
     const pool = await connectDB();
     await ensureTaluksTable(pool);
 
     const name = String(data.name || "").trim();
+    const shortForm = String(data.shortForm || "").trim();
     const description = String(data.description || "").trim();
 
     if (!name) throw new Error("Taluk name is required.");
@@ -111,10 +133,17 @@ exports.create = async (data, user = null) => {
         throw new Error(`Taluk "${name}" already exists.`);
     }
 
+    if (shortForm) {
+        const shortDuplicate = await exports.findByShortForm(shortForm);
+        if (shortDuplicate && shortDuplicate.id !== existing?.id) {
+            throw new Error(`Short form "${shortForm}" already exists.`);
+        }
+    }
+
     await pool.execute(
-        `INSERT INTO Taluks (name, description, createdAt, updatedAt)
-         VALUES (?, ?, ${sql.now()}, ${sql.now()})`,
-        [name, description || null]
+        `INSERT INTO Taluks (name, shortForm, description, createdAt, updatedAt)
+         VALUES (?, ?, ?, ${sql.now()}, ${sql.now()})`,
+        [name, shortForm || null, description || null]
     );
 
     return await exports.findByName(name);
@@ -138,7 +167,9 @@ exports.update = async (id, data, user = null) => {
 
     const existing = existingRows[0];
     const oldName = String(existing.name || "").trim();
+    const oldShortForm = String(existing.shortForm || "").trim();
     const name = data.name !== undefined ? String(data.name).trim() : oldName;
+    const shortForm = data.shortForm !== undefined ? String(data.shortForm).trim() : oldShortForm;
     const description = data.description !== undefined ? String(data.description).trim() : existing.description;
 
     if (!name) throw new Error("Taluk name cannot be empty.");
@@ -152,9 +183,16 @@ exports.update = async (id, data, user = null) => {
         }
     }
 
+    if (shortForm) {
+        const shortDuplicate = await exports.findByShortForm(shortForm);
+        if (shortDuplicate && shortDuplicate.id !== talukId) {
+            throw new Error(`Short form "${shortForm}" already exists.`);
+        }
+    }
+
     await pool.execute(
-        `UPDATE Taluks SET name = ?, description = ?, updatedAt = ${sql.now()} WHERE id = ?`,
-        [name, description || null, talukId]
+        `UPDATE Taluks SET name = ?, shortForm = ?, description = ?, updatedAt = ${sql.now()} WHERE id = ?`,
+        [name, shortForm || null, description || null, talukId]
     );
 
     // Keep route assignments in sync when the taluk is renamed.

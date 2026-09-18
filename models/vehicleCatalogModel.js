@@ -9,7 +9,9 @@ async function ensureVehicleCatalogTable(pool) {
                 vehicleNumber VARCHAR(20) NOT NULL UNIQUE,
                 vehicleType VARCHAR(50) NULL,
                 routeName VARCHAR(100) NULL,
+                taluk VARCHAR(100) NULL,
                 compartments INT DEFAULT 3,
+                capacity VARCHAR(50) NULL,
                 remarks VARCHAR(255) NULL,
                 createdByName VARCHAR(100) NULL,
                 createdByEmpId VARCHAR(50) NULL,
@@ -29,26 +31,15 @@ async function ensureVehicleCatalogTable(pool) {
         console.warn("[VehicleCatalog] Table creation warning:", e.message);
     }
 
-    try {
-        const colCheck = await pool.execute(
-            "SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = 'VehicleCatalog' AND COLUMN_NAME = 'routeName'"
-        );
-        if (colCheck.length === 0) {
-            await pool.execute("ALTER TABLE VehicleCatalog ADD routeName VARCHAR(100) NULL");
-        }
-    } catch (e) {
-        console.warn("[VehicleCatalog] Migration warning:", e.message);
-    }
-
-    try {
-        const colCheck = await pool.execute(
-            "SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = 'VehicleCatalog' AND COLUMN_NAME = 'compartments'"
-        );
-        if (colCheck.length === 0) {
-            await pool.execute("ALTER TABLE VehicleCatalog ADD COLUMN compartments INT DEFAULT 3");
-        }
-    } catch (e) {
-        console.warn("[VehicleCatalog] Compartments migration warning:", e.message);
+    // Best-effort migrations for existing databases.
+    const migrations = [
+        "ALTER TABLE VehicleCatalog ADD routeName VARCHAR(100) NULL",
+        "ALTER TABLE VehicleCatalog ADD COLUMN compartments INT DEFAULT 3",
+        "ALTER TABLE VehicleCatalog ADD COLUMN taluk VARCHAR(100) NULL",
+        "ALTER TABLE VehicleCatalog ADD COLUMN capacity VARCHAR(50) NULL",
+    ];
+    for (const stmt of migrations) {
+        try { await pool.execute(stmt); } catch (_) {}
     }
 }
 
@@ -212,13 +203,15 @@ exports.create = async (data, user = null) => {
 
     const result = await pool.execute(
         `INSERT INTO VehicleCatalog
-         (vehicleNumber, vehicleType, routeName, compartments, remarks, createdByName, createdByEmpId, createdByEmail, createdByDept)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         (vehicleNumber, vehicleType, routeName, taluk, compartments, capacity, remarks, createdByName, createdByEmpId, createdByEmail, createdByDept)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
             vehicleNumber,
             data.vehicleType || "Tanker",
             routeName,
+            data.taluk || null,
             parseInt(data.compartments, 10) || 3,
+            data.capacity || null,
             data.remarks || "",
             name,
             empId,
@@ -232,7 +225,9 @@ exports.create = async (data, user = null) => {
         vehicleNumber,
         vehicleType: data.vehicleType || "Tanker",
         routeName,
+        taluk: data.taluk || null,
         compartments: parseInt(data.compartments, 10) || 3,
+        capacity: data.capacity || null,
         remarks: data.remarks || "",
     };
 };

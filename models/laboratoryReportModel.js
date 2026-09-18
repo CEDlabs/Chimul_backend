@@ -558,7 +558,11 @@ exports.getExtraReport = async (dates, routes) => {
 
     const [wbResult, mcResult, labResult, lctResult] = await Promise.all([
         pool.execute(
-            `SELECT vehicleNumber, routeName, netWeight, ${sql.dateFormat("createdAt", "%Y-%m-%d")} AS day
+            `SELECT vehicleNumber, routeName, netWeight, compartments,
+                    intermediateWeight1, dumpPosition1,
+                    intermediateWeight2, dumpPosition2,
+                    intermediateWeight3, dumpPosition3,
+                    ${sql.dateFormat("createdAt", "%Y-%m-%d")} AS day
              FROM WeighBridgeEntries
              WHERE ${sql.dateFormat("createdAt", "%Y-%m-%d")} IN (${placeholders})
                AND netWeight IS NOT NULL`,
@@ -581,7 +585,7 @@ exports.getExtraReport = async (dates, routes) => {
             dateList
         ),
         pool.execute(
-            `SELECT lct.labTestId, lct.vehicleNumber, lct.compartment,
+            `SELECT lct.labTestId, lct.vehicleNumber, lt.routeNo, lct.compartment,
                     lct.temperature, lct.fat, lct.snf, lct.alcohol,
                     ${sql.dateFormat("lt.testedAt", "%Y-%m-%d")} AS day
              FROM LaboratoryCompartmentTests lct
@@ -613,20 +617,68 @@ exports.getExtraReport = async (dates, routes) => {
         .slice()
         .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
 
+    const getPositions = (n) => {
+        if (n <= 1) return [];
+        if (n === 2) return ["Front Load", "Back Load"];
+        return ["Front Load", "Middle Load", "Back Load"];
+    };
+
+    const calcCompartmentWeights = (wb) => {
+        const gross = toNum(wb.grossWeight) || 0;
+        const tare = toNum(wb.tareWeight) || 0;
+        const compCount = parseInt(wb.compartments, 10) || 3;
+        const records = [
+            { weight: toNum(wb.intermediateWeight1) || 0, position: (wb.dumpPosition1 || "").trim() },
+            { weight: toNum(wb.intermediateWeight2) || 0, position: (wb.dumpPosition2 || "").trim() },
+            { weight: toNum(wb.intermediateWeight3) || 0, position: (wb.dumpPosition3 || "").trim() },
+        ].filter((r) => r.weight > 0 && r.position);
+
+        if (gross <= 0) return { weights: {}, compartmentCount: compCount };
+
+        const allPositions = getPositions(compCount);
+        const capturedPositions = records.map((r) => r.position);
+        const remainingPosition = allPositions.find((p) => !capturedPositions.includes(p)) || `Compartment ${compCount}`;
+
+        const weights = {};
+        let prev = gross;
+        records.forEach((rec) => {
+            const dumpWt = rec.weight;
+            const compartmentWt = Math.max(0, prev - dumpWt);
+            if (compartmentWt > 0) weights[rec.position] = compartmentWt;
+            prev = dumpWt;
+        });
+        const lastCompWt = Math.max(0, prev - tare);
+        if (lastCompWt > 0) weights[remainingPosition] = lastCompWt;
+        return { weights, compartmentCount: compCount };
+    };
+
+    const mapDumpPositionToCompartment = (position) => {
+        const p = String(position || "").toLowerCase();
+        if (p.includes("front") || p === "f" || p === "1") return "front";
+        if (p.includes("back") || p.includes("rear") || p === "b" || p === "2") return "back";
+        if (p.includes("middle") || p === "m" || p === "3") return "middle";
+        return null;
+    };
+
     const buildDayRows = (day) => {
         const wbs = wbByDay.get(day) || [];
         const mcs = mcByDay.get(day) || [];
         const labs = labByDay.get(day) || [];
         const lcts = lctByDay.get(day) || [];
 
-        // Weigh bridge: one entry per vehicle/route → tanker total
+        // Weigh bridge: one entry per vehicle/route → tanker total + compartment weights
         const wbByVehicle = new Map();
         for (const w of wbs) {
             const key = routeKey(w.routeName);
             if (!key || !isSelected(key)) continue;
-            const entry = wbByVehicle.get(key) || { netTotal: 0, vehicles: [] };
+            const entry = wbByVehicle.get(key) || { netTotal: 0, vehicles: [], compWeights: {} };
             entry.netTotal += toNum(w.netWeight) || 0;
             if (w.vehicleNumber && !entry.vehicles.includes(w.vehicleNumber)) entry.vehicles.push(w.vehicleNumber);
+            const { weights } = calcCompartmentWeights(w);
+            Object.entries(weights).forEach(([pos, wt]) => {
+                const comp = mapDumpPositionToCompartment(pos);
+                if (comp) entry.compWeights[comp] = wt;
+            });
             wbByVehicle.set(key, entry);
         }
 
@@ -662,16 +714,24 @@ exports.getExtraReport = async (dates, routes) => {
             labByRoute.set(key, entry);
         }
 
-        // Compartment tests: front/back fat/snf/alcohol/temp
+        // Compartment tests: front/back fat/snf/alcohol/temp — merge with weighbridge compartment weights
         const compByRoute = new Map();
         for (const c of lcts) {
-            const lt = labs.find((l) => l.labTestId === c.labTestId);
-            const key = lt ? routeKey(lt.routeNo) : "";
+            const key = routeKey(c.routeNo);
             if (!key || !isSelected(key)) continue;
             const entry = compByRoute.get(key) || { front: {}, back: {} };
             const compartment = String(c.compartment || "").toLowerCase();
-            if (compartment === "front" || compartment === "back") {
-                entry[compartment] = {
+            const isFront = compartment.includes("front") || compartment === "f" || compartment === "1";
+            const isBack = compartment.includes("back") || compartment === "b" || compartment === "2" || compartment === "rear";
+            if (isFront) {
+                entry.front = {
+                    fat: toNum(c.fat),
+                    snf: toNum(c.snf),
+                    alcohol: toNum(c.alcohol),
+                    temp: toNum(c.temperature),
+                };
+            } else if (isBack) {
+                entry.back = {
                     fat: toNum(c.fat),
                     snf: toNum(c.snf),
                     alcohol: toNum(c.alcohol),
@@ -679,6 +739,13 @@ exports.getExtraReport = async (dates, routes) => {
                 };
             }
             compByRoute.set(key, entry);
+        }
+        // Merge weighbridge compartment weights into compByRoute
+        for (const [key, wbEntry] of wbByVehicle.entries()) {
+            const compEntry = compByRoute.get(key) || { front: {}, back: {} };
+            if (wbEntry.compWeights.front != null) compEntry.front.weight = wbEntry.compWeights.front;
+            if (wbEntry.compWeights.back != null) compEntry.back.weight = wbEntry.compWeights.back;
+            compByRoute.set(key, compEntry);
         }
 
         return allKeys.map((route, index) => {
@@ -689,7 +756,8 @@ exports.getExtraReport = async (dates, routes) => {
 
             const taluk = TALUK_BY_ROUTE[route] || lab.taluk || "";
 
-            const hasData = wb.netTotal > 0 || mc.kg > 0 || lab.temps.length > 0;
+            const hasCompData = Boolean(comp.front.fat != null || comp.front.snf != null || comp.back.fat != null || comp.back.snf != null || comp.front.alcohol != null || comp.back.alcohol != null);
+            const hasData = wb.netTotal > 0 || mc.kg > 0 || lab.temps.length > 0 || hasCompData;
 
             if (!hasData) {
                 return {
@@ -710,8 +778,8 @@ exports.getExtraReport = async (dates, routes) => {
             return {
                 slNo: index + 1, route, taluk,
                 eoName: lab.eoName || "",
-                tankerFront: null,
-                tankerBack: null,
+                tankerFront: round2(comp.front.weight ?? null),
+                tankerBack: round2(comp.back.weight ?? null),
                 tankerTotal,
                 truckSheetWeight,
                 weightDiff,

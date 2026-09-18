@@ -79,6 +79,17 @@ const ensureExtraColumns = async (pool) => {
     await addCol("totalKgFat", "totalKgFat VARCHAR(50) NULL");
     await addCol("totalKgSNF", "totalKgSNF VARCHAR(50) NULL");
     await addCol("quantity", "quantity VARCHAR(20) NULL", "LaboratoryCompartmentTests");
+
+    // Adulteration test columns for LaboratoryCompartmentTests
+    const adulterationCols = [
+        "ammoniumSulphate", "detergent", "glucose", "melamine", "salt",
+        "sodiumCarbonate", "sodiumCitrate", "sorbitol", "starch", "sucrose",
+        "urea", "vegetableOils", "formaldehyde", "maltodextrin", "sodiumIonPPM",
+    ];
+    for (const col of adulterationCols) {
+        await addCol(col, `${col} VARCHAR(20) NULL`, "LaboratoryCompartmentTests");
+        await addCol(`${col}Value`, `${col}Value VARCHAR(100) NULL`, "LaboratoryCompartmentTests");
+    }
 };
 
 const ensureSoftDeleteColumns = async (pool) => {
@@ -96,6 +107,12 @@ const calculateSNF = (clr, fat) => {
     return (((clrVal + fatVal) / 4) + 0.35).toFixed(2);
 };
 
+const ADULTERATION_COLS = [
+    "ammoniumSulphate", "detergent", "glucose", "melamine", "salt",
+    "sodiumCarbonate", "sodiumCitrate", "sorbitol", "starch", "sucrose",
+    "urea", "vegetableOils", "formaldehyde", "maltodextrin", "sodiumIonPPM",
+];
+
 const saveCompartments = async (pool, data, testedAt) => {
     const compartments = Array.isArray(data.compartments) ? data.compartments : [];
     for (const c of compartments) {
@@ -107,7 +124,7 @@ const saveCompartments = async (pool, data, testedAt) => {
             [data.labTestId, compartment]
         ).catch(() => []);
 
-        const fields = [
+        const baseFields = [
             String(data.vehicleNumber || "").toUpperCase(),
             c.temperature || "",
             c.cob || "",
@@ -124,29 +141,46 @@ const saveCompartments = async (pool, data, testedAt) => {
             c.skipped ? 1 : 0,
         ];
 
+        const adulterationValues = ADULTERATION_COLS.map((col) => c[col] || "");
+        const adulterationValueCols = ADULTERATION_COLS.map((col) => c[`${col}Value`] || "");
+
+        const allValues = [...baseFields, ...adulterationValues, ...adulterationValueCols];
+
+        const adulterationColNames = ADULTERATION_COLS.join(", ");
+        const adulterationPlaceholders = ADULTERATION_COLS.map(() => "?").join(", ");
+        const adulterationValueColNames = ADULTERATION_COLS.map((c) => `${c}Value`).join(", ");
+        const adulterationValuePlaceholders = ADULTERATION_COLS.map(() => "?").join(", ");
+
         if (existingComp && existingComp.length > 0) {
             await pool.execute(
                 `UPDATE LaboratoryCompartmentTests
                  SET vehicleNumber = ?, temperature = ?, cob = ?, appearance = ?, flavour = ?, acidity = ?,
-                     clr = ?, fat = ?, alcohol = ?, snf = ?, kgFat = ?, kgSnf = ?, quantity = ?, skipped = ?
+                     clr = ?, fat = ?, alcohol = ?, snf = ?, kgFat = ?, kgSnf = ?, quantity = ?, skipped = ?,
+                     ${ADULTERATION_COLS.map((c) => `${c} = ?`).join(", ")},
+                     ${ADULTERATION_COLS.map((c) => `${c}Value = ?`).join(", ")}
                  WHERE labTestId = ? AND compartment = ?`,
-                [...fields, data.labTestId, compartment]
+                [...baseFields, ...adulterationValues, ...adulterationValueCols, data.labTestId, compartment]
             );
         } else {
             await pool.execute(
                 `INSERT INTO LaboratoryCompartmentTests
                  (labTestId, compartment, vehicleNumber, temperature, cob, appearance, flavour, acidity,
-                  clr, fat, alcohol, snf, kgFat, kgSnf, quantity, skipped)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-                [data.labTestId, compartment, ...fields]
+                  clr, fat, alcohol, snf, kgFat, kgSnf, quantity, skipped,
+                  ${adulterationColNames}, ${adulterationValueColNames})
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                  ${adulterationPlaceholders}, ${adulterationValuePlaceholders})`,
+                [data.labTestId, compartment, ...allValues]
             );
         }
     }
 };
 
 const getCompartments = async (pool, labTestId) => {
+    const adulterationSelects = ADULTERATION_COLS.map((c) => `${c}, ${c}Value`).join(", ");
     const rows = await pool.execute(
-        "SELECT compartment, temperature, cob, appearance, flavour, acidity, clr, fat, alcohol, snf, kgFat, kgSnf, quantity, skipped FROM LaboratoryCompartmentTests WHERE labTestId = ? ORDER BY id ASC",
+        `SELECT compartment, temperature, cob, appearance, flavour, acidity, clr, fat, alcohol, snf,
+                kgFat, kgSnf, quantity, skipped, ${adulterationSelects}
+         FROM LaboratoryCompartmentTests WHERE labTestId = ? ORDER BY id ASC`,
         [labTestId]
     ).catch(() => []);
     return rows || [];

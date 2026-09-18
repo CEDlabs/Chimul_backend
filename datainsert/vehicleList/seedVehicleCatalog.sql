@@ -1,0 +1,41 @@
+-- Vehicle Catalog Seed Data
+-- Run: node datainsert/vehicleList/seedVehicleCatalog.js
+
+INSERT IGNORE INTO VehicleCatalog
+  (vehicleNumber, vehicleType, routeName, taluk, compartments, capacity, remarks, createdAt, updatedAt)
+VALUES
+  ('KA434615',    'Load Tanker (BMC)', '7B',  'Sidlaghatta',    2, '15000', NULL, NOW(), NOW()),
+  ('KA08A5909',   'Load Tanker (BMC)', '8B',  'Sidlaghatta',    1, '12000', NULL, NOW(), NOW()),
+  ('KA05AE7749',  'Load Tanker (BMC)', '9B',  'Sidlaghatta',    2, '12000', NULL, NOW(), NOW()),
+  ('AP31TE8888',  'Load Tanker (BMC)', '10B', 'Sidlaghatta',    1, '18000', NULL, NOW(), NOW()),
+  ('KA01AB5066',  'Load Tanker (BMC)', '11B', 'Sidlaghatta',    2, '14000', NULL, NOW(), NOW()),
+  ('KA05AE7731',  'Load Tanker (BMC)', '30B', 'Sidlaghatta',    2, '11000', NULL, NOW(), NOW()),
+  ('KA05AE7029',  'Load Tanker (BMC)', '40B', 'Sidlaghatta',    1, '12000', NULL, NOW(), NOW()),
+  ('KA14C6508',   'Load Tanker (BMC)', '62B', 'Sidlaghatta',    2, '15000', NULL, NOW(), NOW()),
+  ('KA28AA9718',  'Load Tanker (BMC)', '38B', 'Sidlaghatta',    2, '18000', NULL, NOW(), NOW()),
+  ('KA437396',    'Load Tanker (BMC)', '49B', 'Bagepalli',      2, '16000', NULL, NOW(), NOW()),
+  ('KA52A9669',   'Load Tanker (BMC)', '22B', 'Bagepalli',      2, '16000', NULL, NOW(), NOW()),
+  ('KA05AF1179',  'Load Tanker (BMC)', '35B', 'Chikkaballapura',2, '15000', NULL, NOW(), NOW()),
+  ('KA05AF8919',  'Load Tanker (BMC)', '37B', 'Chikkaballapura',2, '16000', NULL, NOW(), NOW()),
+  ('KA590606',    'Load Tanker (BMC)', '47B', 'Chikkaballapura',1, '12000', NULL, NOW(), NOW()),
+  ('KA05AQ9189',  'Load Tanker (BMC)', '72B', 'Chikkaballapura',2, '16000', NULL, NOW(), NOW()),
+  ('KA05AC9450',  'Load Tanker (BMC)', '46B', 'Chikkaballapura',2, '15000', NULL, NOW(), NOW()),
+  ('KA07B5704',   'Load Tanker (BMC)', '14B', 'Chintamani',     1, '18000', NULL, NOW(), NOW()),
+  ('KA05AE5058',  'Load Tanker (BMC)', '20B', 'Chintamani',     2, '18000', NULL, NOW(), NOW()),
+  ('KA05AF0918',  'Load Tanker (BMC)', '25B', 'Chintamani',     2, '15000', NULL, NOW(), NOW()),
+  ('KA05AC6795',  'Load Tanker (BMC)', '23B', 'Chintamani',     2, '15000', NULL, NOW(), NOW()),
+  ('KA01AS2255',  'Load Tanker (BMC)', '12B', 'Chintamani',     2, '16000', NULL, NOW(), NOW()),
+  ('KA07B6362',   'Load Tanker (BMC)', '50B', 'Gauribidanur',   2, '12000', NULL, NOW(), NOW()),
+  ('KA05AE7767',  'Load Tanker (BMC)', '57B', 'Gauribidanur',   2, '12000', NULL, NOW(), NOW()),
+  ('KA07B5398',   'Load Tanker (BMC)', '58B', 'Gauribidanur',   1, '12000', NULL, NOW(), NOW()),
+  ('KA07A2986',   'Load Tanker (BMC)', '63B', 'Gauribidanur',   1, '12000', NULL, NOW(), NOW()),
+  ('KA437570',    'Load Tanker (BMC)', '67B', 'Gauribidanur',   2, '15000', NULL, NOW(), NOW()),
+  ('KA408949',    'Load Tanker (BMC)', '18B', 'Gauribidanur',   2, '15000', NULL, NOW(), NOW()),
+  ('AP37TE1319',  'Load Tanker (BMC)', '68B', 'Gauribidanur',   2, '16000', NULL, NOW(), NOW()),
+  ('KA01AB5066',  'Load Tanker (BMC)', '86B', 'Gauribidanur',   2, '15000', NULL, NOW(), NOW()),
+  ('KA51AF6645',  'Load Tanker (BMC)', '93B', 'Gauribidanur',   2, '18000', NULL, NOW(), NOW()),
+  ('KA25AA5050',  'Load Tanker (BMC)', '55B', 'Gudibande',      2, '18000', NULL, NOW(), NOW()),
+  ('KA01AL8199',  'Load Tanker (BMC)', '95B', 'Gudibande',      2, '15000', NULL, NOW(), NOW()),
+  ('KA05AE6489',  'Load Tanker (BMC)', '17B', 'Chintamani',     2, '18000', NULL, NOW(), NOW()),
+  ('KA05AP9909',  'Load Tanker (BMC)', '43B', 'Chintamani',     2, '18000', NULL, NOW(), NOW()),
+  ('KA05AD4059',  'Load Tanker (BMC)', '41B', 'Chintamani',     2, '18000', NULL, NOW(), NOW());

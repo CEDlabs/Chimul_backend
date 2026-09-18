@@ -9,6 +9,10 @@ async function ensureClusterTable(pool) {
                 bmcId INT NULL,
                 bmcCode VARCHAR(50) NULL,
                 routeName VARCHAR(100) NULL,
+                taluk VARCHAR(100) NULL,
+                rtCd VARCHAR(100) NULL,
+                bmcType VARCHAR(10) NULL,
+                capacity VARCHAR(50) NULL,
                 clusterCode VARCHAR(50) NULL,
                 clusterName VARCHAR(150) NULL,
                 memberCode VARCHAR(50) NULL,
@@ -37,26 +41,17 @@ async function ensureClusterTable(pool) {
         console.warn("[Clusters] Table creation warning:", e.message);
     }
 
-    try {
-        const colCheck = await pool.execute(
-            "SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = 'Clusters' AND COLUMN_NAME = 'updatedByName'"
-        );
-        if (colCheck.length === 0) {
-            await pool.execute("ALTER TABLE Clusters ADD COLUMN updatedByName VARCHAR(100) NULL");
-        }
-    } catch (e) {
-        console.warn("[Clusters] updatedByName migration warning:", e.message);
-    }
-
-    try {
-        const colCheck = await pool.execute(
-            "SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = 'Clusters' AND COLUMN_NAME = 'updatedByEmpId'"
-        );
-        if (colCheck.length === 0) {
-            await pool.execute("ALTER TABLE Clusters ADD COLUMN updatedByEmpId VARCHAR(50) NULL");
-        }
-    } catch (e) {
-        console.warn("[Clusters] updatedByEmpId migration warning:", e.message);
+    // Best-effort migrations for existing databases.
+    const migrations = [
+        "ALTER TABLE Clusters ADD COLUMN updatedByName VARCHAR(100) NULL",
+        "ALTER TABLE Clusters ADD COLUMN updatedByEmpId VARCHAR(50) NULL",
+        "ALTER TABLE Clusters ADD COLUMN taluk VARCHAR(100) NULL",
+        "ALTER TABLE Clusters ADD COLUMN rtCd VARCHAR(100) NULL",
+        "ALTER TABLE Clusters ADD COLUMN bmcType VARCHAR(10) NULL",
+        "ALTER TABLE Clusters ADD COLUMN capacity VARCHAR(50) NULL",
+    ];
+    for (const stmt of migrations) {
+        try { await pool.execute(stmt); } catch (_) {}
     }
 }
 
@@ -226,12 +221,17 @@ exports.create = async (data, user = null) => {
 
     const result = await pool.execute(
         `INSERT INTO Clusters
-         (bmcId, bmcCode, routeName, clusterCode, clusterName, memberCode, memberName,
+         (bmcId, bmcCode, routeName, taluk, rtCd, bmcType, capacity,
+          clusterCode, clusterName, memberCode, memberName,
           morningBmcId, morningBmcCode, eveningBmcId, eveningBmcCode,
           createdByName, createdByEmpId, createdByEmail, createdByDept)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
             bmcId, bmcCode, routeName,
+            clamp(data.taluk, 100).trim() || null,
+            clamp(data.rtCd, 100).trim() || null,
+            clamp(data.bmcType, 10).trim() || null,
+            clamp(data.capacity, 50).trim() || null,
             clusterCode, clusterName, memberCode, memberName,
             morningBmc.id, morningBmc.bmcCode, eveningBmc.id, eveningBmc.bmcCode,
             name, empId, email, dept,
@@ -240,19 +240,15 @@ exports.create = async (data, user = null) => {
 
     return {
         id: result.insertId,
-        bmcId,
-        bmcCode,
-        routeName,
-        clusterCode,
-        clusterName,
-        memberCode,
-        memberName,
-        morningBmcId: morningBmc.id,
-        morningBmcCode: morningBmc.bmcCode,
-        eveningBmcId: eveningBmc.id,
-        eveningBmcCode: eveningBmc.bmcCode,
-        createdByName: name,
-        createdByEmpId: empId,
+        bmcId, bmcCode, routeName,
+        taluk: clamp(data.taluk, 100).trim() || null,
+        rtCd: clamp(data.rtCd, 100).trim() || null,
+        bmcType: clamp(data.bmcType, 10).trim() || null,
+        capacity: clamp(data.capacity, 50).trim() || null,
+        clusterCode, clusterName, memberCode, memberName,
+        morningBmcId: morningBmc.id, morningBmcCode: morningBmc.bmcCode,
+        eveningBmcId: eveningBmc.id, eveningBmcCode: eveningBmc.bmcCode,
+        createdByName: name, createdByEmpId: empId,
     };
 };
 
@@ -276,9 +272,11 @@ exports.update = async (id, data, user = null) => {
     const routeName = String(data.routeName !== undefined ? data.routeName : existing.routeName).trim();
     const memberCode = clamp(data.memberCode !== undefined ? data.memberCode : existing.memberCode, 50).trim();
     const memberName = clamp(data.memberName !== undefined ? data.memberName : existing.memberName, 150).trim();
+    const clusterCode = clamp(data.clusterCode !== undefined ? data.clusterCode : existing.clusterCode, 50).trim();
+    const clusterName = clamp(data.clusterName !== undefined ? data.clusterName : existing.clusterName, 150).trim();
 
-    if (!routeName || !memberCode || !memberName) {
-        const err = new Error("Route, member code and member name cannot be empty.");
+    if (!routeName || ((!memberCode && !clusterCode) || (!memberName && !clusterName))) {
+        const err = new Error("Route and at least one of (memberCode/clusterCode) and (memberName/clusterName) are required.");
         err.status = 400;
         throw err;
     }
@@ -316,8 +314,8 @@ exports.update = async (id, data, user = null) => {
     const eveningBmc = await resolveBmc(eveningRawId, "Evening batch BMC");
 
     // Cluster code/name stay as-is (or keep defaults) when not provided.
-    const clusterCode = clamp(data.clusterCode !== undefined ? data.clusterCode : existing.clusterCode, 50).trim() || memberCode;
-    const clusterName = clamp(data.clusterName !== undefined ? data.clusterName : existing.clusterName, 150).trim() || memberName;
+    const finalClusterCode = clusterCode || memberCode;
+    const finalClusterName = clusterName || memberName;
 
     // Parent BMC is what the user picked for this cluster.
     const bmcId = parentBmc.id;
@@ -352,11 +350,20 @@ exports.update = async (id, data, user = null) => {
     }
 
     const { name, empId } = extractUserDetails(user);
+    const taluk = data.taluk !== undefined ? clamp(data.taluk, 100).trim() : (existing.taluk || null);
+    const rtCd = data.rtCd !== undefined ? clamp(data.rtCd, 100).trim() : (existing.rtCd || null);
+    const bmcType = data.bmcType !== undefined ? clamp(data.bmcType, 10).trim() : (existing.bmcType || null);
+    const capacity = data.capacity !== undefined ? clamp(data.capacity, 50).trim() : (existing.capacity || null);
+
     await pool.execute(
         `UPDATE Clusters SET
             bmcId = ?,
             bmcCode = ?,
             routeName = ?,
+            taluk = ?,
+            rtCd = ?,
+            bmcType = ?,
+            capacity = ?,
             clusterCode = ?,
             clusterName = ?,
             memberCode = ?,
@@ -371,7 +378,8 @@ exports.update = async (id, data, user = null) => {
          WHERE id = ?`,
         [
             bmcId, bmcCode, routeName,
-            clusterCode, clusterName, memberCode, memberName,
+            taluk || null, rtCd || null, bmcType || null, capacity || null,
+            finalClusterCode, finalClusterName, memberCode, memberName,
             morningBmc.id, morningBmc.bmcCode, eveningBmc.id, eveningBmc.bmcCode,
             name, empId, clusterId,
         ]
@@ -380,6 +388,7 @@ exports.update = async (id, data, user = null) => {
     return {
         id: clusterId,
         bmcId, bmcCode, routeName,
+        taluk, rtCd, bmcType, capacity,
         clusterCode, clusterName, memberCode, memberName,
         morningBmcId: morningBmc.id, morningBmcCode: morningBmc.bmcCode,
         eveningBmcId: eveningBmc.id, eveningBmcCode: eveningBmc.bmcCode,
