@@ -23,6 +23,8 @@ const ALLOWED_REGISTER_DEPARTMENTS = [
     "weighmenttracker",
     "samplecollector",
     "trucksheet",
+    "cip",
+    "cleaning",
 ];
 
 // Bcrypt hash of a throwaway string. When an email is not found we still run a

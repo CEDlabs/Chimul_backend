@@ -5,6 +5,7 @@ const ensureTable = async (pool) => {
         CREATE TABLE IF NOT EXISTS Products (
             id INT ${sql.autoIncrement} PRIMARY KEY,
             name VARCHAR(150) NOT NULL UNIQUE,
+            department VARCHAR(100) NULL,
             status VARCHAR(30) NOT NULL DEFAULT 'active',
             createdById VARCHAR(50) NULL,
             createdByName VARCHAR(150) NULL,
@@ -17,6 +18,7 @@ const ensureTable = async (pool) => {
             id INT ${sql.autoIncrement} PRIMARY KEY,
             productId INT NULL,
             productName VARCHAR(150) NOT NULL,
+            department VARCHAR(100) NULL,
             requestedQuantity DECIMAL(12,3) NOT NULL,
             requestedFat DECIMAL(8,3) NOT NULL,
             requestedSnf DECIMAL(8,3) NOT NULL,
@@ -28,7 +30,24 @@ const ensureTable = async (pool) => {
             updatedAt DATETIME NOT NULL DEFAULT ${sql.now()}
         )
     `);
+    try { await pool.execute("ALTER TABLE Products ADD COLUMN department VARCHAR(100) NULL"); } catch {}
     try { await pool.execute("ALTER TABLE ProductRequests ADD COLUMN productId INT NULL"); } catch {}
+    try { await pool.execute("ALTER TABLE ProductRequests ADD COLUMN department VARCHAR(100) NULL"); } catch {}
+
+    // Seed default products with departments if empty
+    try {
+        const prods = await pool.execute("SELECT COUNT(*) AS c FROM Products");
+        if (Number(prods[0]?.c || 0) === 0) {
+            await pool.execute(`
+                INSERT INTO Products (name, department, status) VALUES
+                ('UHT Milk', 'UHT', 'active'),
+                ('Fresh Paneer', 'Paneer', 'active'),
+                ('Fluxi Drink', 'Fluxi', 'active'),
+                ('Pure Cow Ghee', 'Ghee', 'active'),
+                ('Milk Sweets', 'Sweet', 'active')
+            `);
+        }
+    } catch {}
 };
 
 const positive = (value, name) => {
@@ -46,24 +65,31 @@ exports.list = async () => {
 exports.listProducts = async () => {
     const pool = await connectDB();
     await ensureTable(pool);
-    return pool.execute("SELECT * FROM Products ORDER BY name");
+    return pool.execute("SELECT * FROM Products ORDER BY department, name");
 };
 
-exports.createProduct = async ({ name }, user) => {
+exports.createProduct = async ({ name, department }, user) => {
     const pool = await connectDB();
     await ensureTable(pool);
     const cleanName = String(name || "").trim();
     if (!cleanName) throw new Error("Product name is required.");
-    await pool.execute("INSERT INTO Products (name, createdById, createdByName) VALUES (?, ?, ?)", [cleanName, user?.id || user?.employeeId || null, user?.employeeName || null]);
+    const cleanDept = String(department || "General").trim();
+    await pool.execute(
+        "INSERT INTO Products (name, department, createdById, createdByName) VALUES (?, ?, ?, ?)",
+        [cleanName, cleanDept, user?.id || user?.employeeId || null, user?.employeeName || null]
+    );
     return (await pool.execute("SELECT * FROM Products WHERE name = ?", [cleanName]))[0];
 };
 
-exports.updateProduct = async (id, { name, status }, user) => {
+exports.updateProduct = async (id, { name, department, status }, user) => {
     const pool = await connectDB();
     await ensureTable(pool);
     const cleanName = String(name || "").trim();
     if (!cleanName) throw new Error("Product name is required.");
-    await pool.execute(`UPDATE Products SET name = ?, status = ?, updatedAt = ${sql.now()} WHERE id = ?`, [cleanName, status || "active", id]);
+    await pool.execute(
+        `UPDATE Products SET name = ?, department = ?, status = ?, updatedAt = ${sql.now()} WHERE id = ?`,
+        [cleanName, department || "General", status || "active", id]
+    );
     return (await pool.execute("SELECT * FROM Products WHERE id = ?", [id]))[0];
 };
 

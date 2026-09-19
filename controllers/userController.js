@@ -73,6 +73,17 @@ exports.createUser = async (req, res) => {
             ? String(status).trim().toLowerCase()
             : "active";
 
+        console.log(`[USER_CREATE] Attempting to create user:`, {
+            employeeId,
+            employeeName,
+            email,
+            phone,
+            department: dept,
+            role,
+            isDepartmentAdmin: normalizeFlag(isDepartmentAdmin),
+            accountStatus,
+        });
+
         await pool.execute(
             `INSERT INTO employees
              (employee_id, employee_name, email, phone, department, role, password_hash, is_department_admin, account_status)
@@ -80,9 +91,40 @@ exports.createUser = async (req, res) => {
             [employeeId, employeeName, email, phone, dept, role, hashedPassword, normalizeFlag(isDepartmentAdmin) ? 1 : 0, accountStatus]
         );
 
-        return res.status(201).json({ success: true, message: "User created successfully." });
+        console.log(`[USER_CREATE] Inserted into employees table. Querying created user for employeeId: "${employeeId}"`);
+
+        const rows = await pool.execute(
+            `SELECT id, employee_id, employee_name, email, phone, department, role,
+                    is_department_admin, account_status, created_at
+             FROM employees
+             WHERE employee_id = ?`,
+            [employeeId]
+        );
+
+        console.log(`[USER_CREATE] Query result rows (${rows?.length || 0}):`, rows);
+
+        const createdUser = rows && rows.length > 0 ? {
+            id: rows[0].id,
+            employeeId: rows[0].employee_id,
+            employeeName: rows[0].employee_name,
+            email: rows[0].email,
+            phone: rows[0].phone,
+            department: rows[0].department,
+            role: rows[0].role,
+            isDepartmentAdmin: !!Number(rows[0].is_department_admin),
+            accountStatus: rows[0].account_status || "active",
+            createdAt: rows[0].created_at,
+        } : null;
+
+        console.log(`[USER_CREATE] Formatted createdUser response:`, createdUser);
+
+        return res.status(201).json({
+            success: true,
+            message: "User created successfully.",
+            user: createdUser,
+        });
     } catch (err) {
-        console.error("Create user error:", err);
+        console.error("[USER_CREATE] Error creating user:", err);
         return res.status(500).json({ success: false, message: "Failed to create user." });
     }
 };

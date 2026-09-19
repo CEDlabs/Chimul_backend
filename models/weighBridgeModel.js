@@ -2,6 +2,7 @@ const { connectDB, sql } = require("../config/db");
 const AuditLog = require("./auditLogModel");
 const AlternativeVehicle = require("./alternativeVehicleModel");
 const { ensureSearchIndexes, normalizePlate, freeText } = require("../utils/searchIndexes");
+const CIP = require("./cipModel");
 
 // Calendar "today" in the server's local time zone, as a YYYY-MM-DD string.
 // Used for date-window lookups (alternative vehicles). The day-boundary
@@ -79,6 +80,7 @@ async function ensureWBTable(pool) {
     } catch (e) {
         console.warn("WeighBridgeEntries table creation error:", e.message);
     }
+    await CIP.ensureTables(pool);
 }
 
 
@@ -164,6 +166,9 @@ exports.saveIntermediate = async (wbEntryId, { weight, dumpPosition, mode }) => 
 
 exports.saveTare = async (wbEntryId, tareWeight, mode) => {
     const pool = await connectDB();
+
+    const cip = await CIP.findByWBEntryId(wbEntryId);
+    if (!cip) throw new Error("CIP cleaning must be completed before tare weight can be recorded.");
 
     const cur = await pool.execute(
         "SELECT grossWeight, intermediateCount, status FROM WeighBridgeEntries WHERE wbEntryId = ?",

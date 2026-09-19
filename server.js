@@ -250,6 +250,7 @@ app.use("/api/auth", require("./routes/authRoutes"));
 app.use("/api/users", require("./routes/userRoutes"));
 app.use("/api/gate-entry", require("./routes/gateEntryRoutes"));
 app.use("/api/waybridge", require("./routes/weighBridgeRoutes"));
+app.use("/api/cip", require("./routes/cipRoutes"));
 app.use("/api/sample-collection", require("./routes/sampleCollectionRoutes"));
 app.use("/api/milk-collection", require("./routes/milkCollectionRoutes"));
 app.use("/api/laboratory", require("./routes/laboratoryTestRoutes"));

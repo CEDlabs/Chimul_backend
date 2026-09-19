@@ -31,9 +31,10 @@ const ensureTables = async (pool) => {
     try { await pool.execute("ALTER TABLE SiloFulfillments ADD COLUMN additiveSnf DECIMAL(8,3) NULL"); } catch {}
     try { await pool.execute("ALTER TABLE SiloFulfillments ADD COLUMN additiveKgFat DECIMAL(12,3) NULL"); } catch {}
     try { await pool.execute("ALTER TABLE SiloFulfillments ADD COLUMN additiveKgSnf DECIMAL(12,3) NULL"); } catch {}
-    try { await pool.execute("ALTER TABLE SiloFulfillments ADD COLUMN totalQuantity DECIMAL(12,3) NULL"); } catch {}
     try { await pool.execute("ALTER TABLE SiloFulfillments ADD COLUMN totalKgFat DECIMAL(12,3) NULL"); } catch {}
     try { await pool.execute("ALTER TABLE SiloFulfillments ADD COLUMN totalKgSnf DECIMAL(12,3) NULL"); } catch {}
+    try { await pool.execute("ALTER TABLE SiloFulfillments ADD COLUMN startTime DATETIME NULL"); } catch {}
+    try { await pool.execute("ALTER TABLE SiloFulfillments ADD COLUMN endTime DATETIME NULL"); } catch {}
 
     await pool.execute(`
         CREATE TABLE IF NOT EXISTS SiloFulfillmentSources (
@@ -129,8 +130,9 @@ exports.fulfill = async ({
                 fulfilledById, fulfilledByName,
                 milkQuantity, milkClr, milkFat, milkSnf, milkKgFat, milkKgSnf,
                 additiveQuantity, additiveClr, additiveFat, additiveSnf, additiveKgFat, additiveKgSnf,
-                totalQuantity, totalKgFat, totalKgSnf
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                totalQuantity, totalKgFat, totalKgSnf,
+                startTime, endTime
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
             [
                 productRequestId,
                 siloId,
@@ -155,6 +157,8 @@ exports.fulfill = async ({
                 combinedTotal,
                 totalKgFat !== undefined ? Number(totalKgFat) : null,
                 totalKgSnf !== undefined ? Number(totalKgSnf) : null,
+                startTime ? new Date(startTime) : null,
+                endTime ? new Date(endTime) : null,
             ]
         );
         const fulfillmentId = insertResult.insertId ?? insertResult[0]?.insertId;
