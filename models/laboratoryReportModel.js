@@ -558,7 +558,7 @@ exports.getExtraReport = async (dates, routes) => {
 
     const [wbResult, mcResult, labResult, lctResult] = await Promise.all([
         pool.execute(
-            `SELECT vehicleNumber, routeName, netWeight, compartments,
+            `SELECT vehicleNumber, routeName, netWeight, grossWeight, tareWeight, compartments,
                     intermediateWeight1, dumpPosition1,
                     intermediateWeight2, dumpPosition2,
                     intermediateWeight3, dumpPosition3,
