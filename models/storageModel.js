@@ -5,6 +5,7 @@ const ensureTables = async (pool) => {
     try { await pool.execute("ALTER TABLE TankDumpLogs ADD COLUMN routeNo VARCHAR(100) NULL"); } catch { }
     try { await pool.execute("ALTER TABLE TankDumpLogs ADD COLUMN dumpStartTime DATETIME NULL"); } catch { }
     try { await pool.execute("ALTER TABLE TankDumpLogs ADD COLUMN dumpEndTime DATETIME NULL"); } catch { }
+    try { await pool.execute("ALTER TABLE DepartmentMilkAllotments ADD COLUMN producedQuantity DECIMAL(12,3) NOT NULL DEFAULT 0"); } catch { }
     await pool.execute(`
         CREATE TABLE IF NOT EXISTS StorageTanks (
             id INT ${sql.autoIncrement} PRIMARY KEY,
@@ -101,6 +102,7 @@ const ensureTables = async (pool) => {
             sourceSiloLabel VARCHAR(100) NULL,
             allottedQuantity DECIMAL(12,3) NOT NULL,
             usedQuantity DECIMAL(12,3) NOT NULL DEFAULT 0,
+            producedQuantity DECIMAL(12,3) NOT NULL DEFAULT 0,
             returnedQuantity DECIMAL(12,3) NOT NULL DEFAULT 0,
             rinseTankId INT NULL,
             rinseTankLabel VARCHAR(100) NULL,
@@ -624,13 +626,15 @@ exports.allotMilkToDepartment = async ({ department, productId, productName, sou
     }
 };
 
-exports.returnDepartmentMilk = async ({ allotmentId, usedQuantity, returnedQuantity, rinseTankId, startTime, endTime, notes }, user) => {
+exports.returnDepartmentMilk = async ({ allotmentId, usedQuantity, producedQuantity, returnedQuantity, rinseTankId, startTime, endTime, notes }, user) => {
     const pool = await connectDB();
     await ensureTables(pool);
     if (!allotmentId) throw new Error("Allotment record ID is required.");
     const used = Number(usedQuantity);
+    const produced = Number(producedQuantity);
     const returned = Number(returnedQuantity);
     if (!Number.isFinite(used) || used < 0) throw new Error("Used quantity must be a non-negative number.");
+    if (!Number.isFinite(produced) || produced < 0) throw new Error("Produced quantity must be a non-negative number.");
     if (!Number.isFinite(returned) || returned < 0) throw new Error("Returned quantity must be a non-negative number.");
     if (used + returned <= 0) throw new Error("Total of used and returned milk must be greater than zero.");
     if (returned > 0 && !rinseTankId) throw new Error("Destination rinse tank is required when milk is returned.");
@@ -663,6 +667,7 @@ exports.returnDepartmentMilk = async ({ allotmentId, usedQuantity, returnedQuant
         await conn.execute(
             `UPDATE DepartmentMilkAllotments SET
                 usedQuantity = ?,
+                producedQuantity = ?,
                 returnedQuantity = ?,
                 rinseTankId = ?,
                 rinseTankLabel = ?,
@@ -674,13 +679,14 @@ exports.returnDepartmentMilk = async ({ allotmentId, usedQuantity, returnedQuant
                 returnedByName = ?,
                 notes = CASE WHEN notes IS NULL OR notes = '' THEN ? ELSE CONCAT(notes, ' | ', ?) END
              WHERE id = ?`,
-            [used, returned, rinseTankId || null, rinseTank?.label || null, cleanStart, cleanEnd, userId, userName, notes || '', notes || '', allotmentId]
+            [used, produced, returned, rinseTankId || null, rinseTank?.label || null, cleanStart, cleanEnd, userId, userName, notes || '', notes || '', allotmentId]
         );
 
         await conn.commit();
         return {
             allotmentId,
             usedQuantity: used,
+            producedQuantity: produced,
             returnedQuantity: returned,
             rinseTankLabel: rinseTank?.label || null,
             status: "completed"

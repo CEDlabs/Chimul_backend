@@ -260,6 +260,7 @@ app.use("/api/fulfillments", require("./routes/fulfillmentRoutes"));
 app.use("/api/notifications", require("./routes/notificationRoutes"));
 app.use("/api/vehicles", require("./routes/vehicleRoutes"));
 app.use("/api/routes", require("./routes/routeRoutes"));
+app.use("/api/departments", require("./routes/departmentRoutes"));
 
 /* =========================================================
    HEALTH CHECK
