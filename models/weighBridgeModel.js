@@ -43,7 +43,7 @@ async function ensureWBTable(pool) {
                 driverName VARCHAR(100) NULL,
                 supplierCode VARCHAR(50) NULL,
                 contractorCode VARCHAR(50) NULL,
-                purpose VARCHAR(50) DEFAULT 'Unloading',
+                purpose VARCHAR(50) DEFAULT 'Load Tanker (BMC)',
                 destination VARCHAR(100) NULL,
                 productGroup VARCHAR(100) NULL,
                 productName VARCHAR(100) NULL,
@@ -70,6 +70,8 @@ async function ensureWBTable(pool) {
                 intermediateWeight2Mode VARCHAR(20) NULL,
                 intermediateWeight3Mode VARCHAR(20) NULL,
                 tareWeightMode VARCHAR(20) NULL,
+                entryCategory VARCHAR(30) NULL,
+                vehicleType VARCHAR(50) NULL,
                 createdByName VARCHAR(150) NULL,
                 createdByEmpId VARCHAR(50) NULL,
                 createdAt DATETIME DEFAULT ${sql.now()},
@@ -78,6 +80,64 @@ async function ensureWBTable(pool) {
         `);
     } catch (e) {
         console.warn("WeighBridgeEntries table creation error:", e.message);
+    }
+
+    for (const alter of [
+        "ALTER TABLE WeighBridgeEntries ADD COLUMN entryCategory VARCHAR(30) NULL",
+        "ALTER TABLE WeighBridgeEntries ADD COLUMN vehicleType VARCHAR(50) NULL",
+    ]) {
+        try {
+            await pool.execute(alter);
+        } catch { /* column already exists */ }
+    }
+}
+
+const CO_PACKING_TYPE = "Load Tanker (Co-Packing)";
+const OTHER_VEHICLES_TYPE = "Other Vehicles";
+const BMC_TANKER_TYPE = "Load Tanker (BMC)";
+
+const entryCategoryForVehicleType = (vehicleType) => {
+    if (vehicleType === CO_PACKING_TYPE) return "BMC Loading";
+    if (vehicleType === OTHER_VEHICLES_TYPE) return "Other Vehicle";
+    return null;
+};
+
+// WayBridge purpose is one of the three operational types; legacy Loading/Unloading/Tare Check map to BMC.
+const normalizeWbPurpose = (purpose) => {
+    const p = String(purpose || "").trim();
+    if (p === CO_PACKING_TYPE || p === OTHER_VEHICLES_TYPE || p === BMC_TANKER_TYPE) return p;
+    if (p === "Loading" || p === "Unloading" || p === "Tare Check") return BMC_TANKER_TYPE;
+    return BMC_TANKER_TYPE;
+};
+
+const purposeSkipsRoute = (purpose) => {
+    const p = String(purpose || "").trim();
+    return p === CO_PACKING_TYPE || p === OTHER_VEHICLES_TYPE;
+};
+
+// Loading direction: Co-Packing purpose/vehicleType (or legacy Loading / BMC Loading category).
+const isLoadingPurpose = (purpose, entryCategory, vehicleType) => {
+    const p = String(purpose || "").trim();
+    const vt = String(vehicleType || "").trim();
+    if (p === CO_PACKING_TYPE || vt === CO_PACKING_TYPE || p === "Loading") return true;
+    if (p === OTHER_VEHICLES_TYPE || vt === OTHER_VEHICLES_TYPE) return false;
+    return entryCategory === "BMC Loading";
+};
+
+// Resolve vehicleType from today's gate entry when not provided by the client.
+async function resolveVehicleType(pool, vehicleNumber) {
+    try {
+        const rows = await pool.execute(
+            `SELECT vehicleType, routeName, entryCategory
+             FROM GateEntries
+             WHERE UPPER(vehicleNumber) = UPPER(?)
+               AND (isDeleted IS NULL OR isDeleted = 0)
+             ORDER BY createdAt DESC LIMIT 1`,
+            [vehicleNumber]
+        );
+        return rows[0] || null;
+    } catch {
+        return null;
     }
 }
 
@@ -88,23 +148,47 @@ exports.create = async (data) => {
     await ensureSearchIndexes(pool);
 
     const wbEntryId = generateWBId();
+    const gate = await resolveVehicleType(pool, data.vehicleNumber);
+    let purpose = normalizeWbPurpose(data.purpose);
+    // Prefer explicit vehicleType, then purpose (the three operational types), then gate.
+    let vehicleType = data.vehicleType || purpose || gate?.vehicleType || "";
+    // Gate/vehicle Co-Packing always stores purpose as Co-Packing (loading direction).
+    if (gate?.vehicleType === CO_PACKING_TYPE || vehicleType === CO_PACKING_TYPE || purpose === CO_PACKING_TYPE) {
+        purpose = CO_PACKING_TYPE;
+        vehicleType = CO_PACKING_TYPE;
+    } else if (gate?.vehicleType === OTHER_VEHICLES_TYPE || vehicleType === OTHER_VEHICLES_TYPE || purpose === OTHER_VEHICLES_TYPE) {
+        purpose = OTHER_VEHICLES_TYPE;
+        vehicleType = OTHER_VEHICLES_TYPE;
+    }
+    let entryCategory = data.entryCategory || entryCategoryForVehicleType(vehicleType) || gate?.entryCategory || null;
+    let routeName = data.routeName || "";
+    if (purpose === CO_PACKING_TYPE || vehicleType === CO_PACKING_TYPE) {
+        routeName = "";
+        entryCategory = "BMC Loading";
+    } else if (purpose === OTHER_VEHICLES_TYPE || vehicleType === OTHER_VEHICLES_TYPE) {
+        routeName = "";
+        entryCategory = "Other Vehicle";
+    } else if (!entryCategory) {
+        // BMC purpose: default from purpose direction when no category from client/gate.
+        entryCategory = isLoadingPurpose(purpose, entryCategory) ? "BMC Loading" : "BMC Unloading";
+    }
 
     await pool.execute(
         `INSERT INTO WeighBridgeEntries
          (wbEntryId, vehicleNumber, routeName, conductorName, driverName, supplierCode,
           contractorCode, purpose, destination, productGroup, productName, compartments,
           weighBridgeNo, grossWeight, status, createdByName, createdByEmpId, initialWeightAt,
-          initialWeightMode)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Intermediate', ?, ?, ${sql.now()}, ?)`,
+          initialWeightMode, entryCategory, vehicleType)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Intermediate', ?, ?, ${sql.now()}, ?, ?, ?)`,
         [
             wbEntryId,
             (data.vehicleNumber || "").toUpperCase(),
-            data.routeName || "",
+            routeName,
             data.conductorName || "",
             data.driverName || "",
             data.supplierCode || "",
             data.contractorCode || "",
-            data.purpose || "Unloading",
+            purpose,
             data.destination || "",
             data.productGroup || "",
             data.productName || "",
@@ -114,10 +198,12 @@ exports.create = async (data) => {
             data.createdByName || "",
             data.createdByEmpId || "",
             data.captureMode || "Manual",
+            entryCategory,
+            vehicleType || null,
         ]
     );
 
-    return { wbEntryId, ...data };
+    return { wbEntryId, ...data, purpose, routeName, entryCategory, vehicleType };
 };
 
 exports.saveIntermediate = async (wbEntryId, { weight, dumpPosition, mode }) => {
@@ -166,7 +252,7 @@ exports.saveTare = async (wbEntryId, tareWeight, mode) => {
     const pool = await connectDB();
 
     const cur = await pool.execute(
-        "SELECT grossWeight, intermediateCount, status FROM WeighBridgeEntries WHERE wbEntryId = ?",
+        "SELECT grossWeight, intermediateCount, status, purpose, entryCategory, vehicleType FROM WeighBridgeEntries WHERE wbEntryId = ?",
         [wbEntryId]
     );
 
@@ -177,7 +263,14 @@ exports.saveTare = async (wbEntryId, tareWeight, mode) => {
 
     const tare = parseFloat(tareWeight) || 0;
     const gross = parseFloat(row.grossWeight) || 0;
-    const netWeight = Math.max(0, gross - tare);
+    // Loading (Co-Packing / BMC Loading): final weight is heavier → net = final − initial.
+    // Unloading: vehicle gets lighter → net = initial − final.
+    const isLoading = isLoadingPurpose(row.purpose, row.entryCategory, row.vehicleType)
+        || String(row.purpose || "").trim() === CO_PACKING_TYPE
+        || String(row.vehicleType || "").trim() === CO_PACKING_TYPE;
+    const netWeight = isLoading
+        ? Math.max(0, tare - gross)
+        : Math.max(0, gross - tare);
 
     await pool.execute(
         `UPDATE WeighBridgeEntries
@@ -383,6 +476,16 @@ exports.update = async (id, data) => {
     const existing = lookupResult[0];
     const now = new Date();
 
+    // Co-Packing / Other Vehicles purpose: route always null on update too.
+    let nextPurpose = data.purpose !== undefined ? normalizeWbPurpose(data.purpose) : existing.purpose;
+    let nextRoute = data.routeName !== undefined ? data.routeName : existing.routeName;
+    if (String(existing.vehicleType || "").trim() === CO_PACKING_TYPE || nextPurpose === CO_PACKING_TYPE) {
+        nextPurpose = CO_PACKING_TYPE;
+        nextRoute = "";
+    } else if (purposeSkipsRoute(nextPurpose)) {
+        nextRoute = "";
+    }
+
     await pool.execute(
         `UPDATE WeighBridgeEntries SET
             vehicleNumber = ?, routeName = ?, conductorName = ?, driverName = ?,
@@ -393,12 +496,12 @@ exports.update = async (id, data) => {
          WHERE wbEntryId = ?`,
         [
             (data.vehicleNumber || existing.vehicleNumber || "").toUpperCase().trim(),
-            data.routeName !== undefined ? data.routeName : existing.routeName,
+            nextRoute,
             data.conductorName !== undefined ? data.conductorName : existing.conductorName,
             data.driverName !== undefined ? data.driverName : existing.driverName,
             data.supplierCode !== undefined ? data.supplierCode : existing.supplierCode,
             data.contractorCode !== undefined ? data.contractorCode : existing.contractorCode,
-            data.purpose !== undefined ? data.purpose : existing.purpose,
+            nextPurpose,
             data.destination !== undefined ? data.destination : existing.destination,
             data.productGroup !== undefined ? data.productGroup : existing.productGroup,
             data.productName !== undefined ? data.productName : existing.productName,

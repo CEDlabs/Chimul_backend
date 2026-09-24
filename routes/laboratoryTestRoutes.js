@@ -28,6 +28,7 @@ router.get("/lookup", authMiddleware, laboratoryTestController.getDataByRoute);
 router.get("/records", authMiddleware, laboratoryTestController.getAll);
 router.get("/reports/routes", authMiddleware, laboratoryReportController.getRoutes);
 router.get("/reports/daily", authMiddleware, laboratoryReportController.getDaily);
+router.get("/reports/daily-loading", authMiddleware, laboratoryReportController.getDailyLoading);
 router.get("/reports/fortnight", authMiddleware, laboratoryReportController.getFortnight);
 router.get("/reports/taluk", authMiddleware, laboratoryReportController.getTaluk);
 router.get("/reports/extra", authMiddleware, laboratoryReportController.getExtra);

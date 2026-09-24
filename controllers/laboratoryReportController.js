@@ -44,3 +44,12 @@ exports.getExtra = async (req, res) => {
         res.status(500).json({ success: false, message: error.message });
     }
 };
+
+exports.getDailyLoading = async (req, res) => {
+    try {
+        const data = await LaboratoryReport.getDailyLoadingReport(req.query.date);
+        res.json({ success: true, data });
+    } catch (error) {
+        res.status(500).json({ success: false, message: error.message });
+    }
+};

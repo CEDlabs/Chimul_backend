@@ -78,6 +78,8 @@ const ensureExtraColumns = async (pool) => {
     await addCol("kgSnf", "kgSnf VARCHAR(50) NULL");
     await addCol("totalKgFat", "totalKgFat VARCHAR(50) NULL");
     await addCol("totalKgSNF", "totalKgSNF VARCHAR(50) NULL");
+    await addCol("entryCategory", "entryCategory VARCHAR(30) NULL");
+    await addCol("vehicleType", "vehicleType VARCHAR(50) NULL");
     await addCol("quantity", "quantity VARCHAR(20) NULL", "LaboratoryCompartmentTests");
 
     // Adulteration test columns for LaboratoryCompartmentTests
@@ -206,18 +208,59 @@ exports.create = async (data) => {
         ? new Date(data.testedAt)
         : new Date();
     const snf = data.snf || calculateSNF(data.clr, data.fat);
-    const sealNumbers = Array.isArray(data.sealNumbers) ? JSON.stringify(data.sealNumbers) : (data.sealNumbers || "[]");
+    let sealNumbers = Array.isArray(data.sealNumbers) ? data.sealNumbers : (data.sealNumbers || "[]");
+    if (typeof sealNumbers === "string") {
+        try { sealNumbers = JSON.parse(sealNumbers); } catch { sealNumbers = []; }
+    }
+    if (!Array.isArray(sealNumbers)) sealNumbers = [];
+
+    const vehicleType = data.vehicleType || "";
+    const isCoPacking = vehicleType === "Load Tanker (Co-Packing)";
+    const isOtherVehicles = vehicleType === "Other Vehicles";
+    let entryCategory = data.entryCategory || null;
+    let routeNo = data.routeNo || "";
+    if (isCoPacking) {
+        entryCategory = "BMC Loading";
+        routeNo = "";
+        if (sealNumbers.length === 0) {
+            // Seals allocated from Vehicles.master serialNumbers at lab save time.
+            try {
+                const vRows = await pool.execute(
+                    `SELECT serialNumbers FROM Vehicles
+                     WHERE UPPER(vehicleNumber) = UPPER(?)
+                     ORDER BY allocationDate DESC, id DESC LIMIT 1`,
+                    [String(data.vehicleNumber).toUpperCase()]
+                );
+                if (vRows[0]?.serialNumbers) {
+                    let serials = vRows[0].serialNumbers;
+                    if (typeof serials === "string") {
+                        try { serials = JSON.parse(serials); } catch { serials = []; }
+                    }
+                    if (Array.isArray(serials)) sealNumbers = serials.filter(Boolean).slice(0, 4);
+                }
+            } catch { /* keep empty seals */ }
+        }
+    } else if (isOtherVehicles) {
+        entryCategory = "Other Vehicle";
+        routeNo = "";
+        sealNumbers = [];
+    } else if (!entryCategory) {
+        entryCategory = data.entryCategory
+            || (data.weighbridgePurpose === "Loading" || data.weighbridgePurpose === "Load Tanker (Co-Packing)" ? "BMC Loading" : null);
+    }
+    const sealNumbersJson = JSON.stringify(sealNumbers);
 
     await pool.execute(
         `INSERT INTO LaboratoryTests
          (labTestId, vehicleNumber, routeNo, taluk, gateEntryId, wbEntryId, driverName, supplierName,
           materialType, productName, sealNumbers, temperature, cob, acidity, appearance,
-          clr, fat, alcohol, snf, kgFat, kgSnf, totalKgFat, totalKgSNF, flavors, remarks, testedByName, testedByEmpId, testedAt)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          clr, fat, alcohol, snf, kgFat, kgSnf, totalKgFat, totalKgSNF, flavors, remarks, testedByName, testedByEmpId, testedAt,
+          entryCategory, vehicleType)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
             data.labTestId,
             String(data.vehicleNumber).toUpperCase(),
-            data.routeNo || "",
+            routeNo,
             data.taluk || "",
             data.gateEntryId || "",
             data.wbEntryId || "",
@@ -225,7 +268,7 @@ exports.create = async (data) => {
             data.supplierName || "",
             data.materialType || "",
             data.productName || "",
-            sealNumbers,
+            sealNumbersJson,
             data.temperature || "",
             data.cob || "",
             data.acidity || "",
@@ -243,13 +286,25 @@ exports.create = async (data) => {
             data.testedByName || "",
             data.testedByEmpId || "",
             testedAt,
+            entryCategory,
+            vehicleType || null,
         ]
     );
 
     await saveCompartments(pool, data, testedAt);
     const compartments = await getCompartments(pool, data.labTestId);
 
-    return { ...data, vehicleNumber: String(data.vehicleNumber).toUpperCase(), snf, compartments, testedAt };
+    return {
+        ...data,
+        vehicleNumber: String(data.vehicleNumber).toUpperCase(),
+        snf,
+        compartments,
+        testedAt,
+        routeNo,
+        sealNumbers,
+        entryCategory,
+        vehicleType: vehicleType || null,
+    };
 };
 
 exports.getAll = async ({ vehicleNumber, routeNo, startDate, endDate } = {}) => {

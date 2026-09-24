@@ -31,6 +31,17 @@ const round2 = (n) => (n === null || n === undefined ? null : Math.round(n * 100
 
 const sum = (arr) => arr.reduce((a, b) => a + (b || 0), 0);
 
+const CO_PACKING_TYPE = "Load Tanker (Co-Packing)";
+
+const isCoPackingRow = (row) =>
+    String(row?.vehicleType || "").trim() === CO_PACKING_TYPE ||
+    String(row?.entryCategory || "").trim() === "BMC Loading" &&
+        String(row?.vehicleType || "").trim() === CO_PACKING_TYPE;
+
+// Exclude Co-Packing from BMC route-based reports (Daily / Fortnight / Extra / routes list).
+const excludeCoPacking = (sqlExpr = "vehicleType") =>
+    `(${sqlExpr} IS NULL OR UPPER(TRIM(${sqlExpr})) <> UPPER(?))`;
+
 const computeTotals = (rows) => {
     const t = {
         tankerQuantity: round2(sum(rows.map((r) => r.tankerQuantity))),
@@ -86,11 +97,13 @@ exports.getDailyReport = async (dates, routes) => {
 
     const [wbResult, mcResult, labResult] = await Promise.all([
         pool.execute(
-            `SELECT vehicleNumber, routeName, netWeight, ${sql.dateFormat("createdAt", "%Y-%m-%d")} AS day
+            `SELECT vehicleNumber, routeName, netWeight, vehicleType, entryCategory,
+                    ${sql.dateFormat("createdAt", "%Y-%m-%d")} AS day
              FROM WeighBridgeEntries
              WHERE ${sql.dateFormat("createdAt", "%Y-%m-%d")} IN (${placeholders})
-               AND netWeight IS NOT NULL`,
-            dateList
+               AND netWeight IS NOT NULL
+               AND (vehicleType IS NULL OR UPPER(TRIM(vehicleType)) <> UPPER(?))`,
+            [...dateList, CO_PACKING_TYPE]
         ),
         pool.execute(
             `SELECT vehicleNumber, routeNo, eveningKg, morningKg,
@@ -102,10 +115,12 @@ exports.getDailyReport = async (dates, routes) => {
         ),
         pool.execute(
             `SELECT vehicleNumber, routeNo, taluk, temperature, clr, fat, snf, alcohol, kgFat, kgSnf, totalKgFat, totalKgSNF,
+                    vehicleType, entryCategory,
                     ${sql.dateFormat("testedAt", "%Y-%m-%d")} AS day
              FROM LaboratoryTests
-             WHERE ${sql.dateFormat("testedAt", "%Y-%m-%d")} IN (${placeholders})`,
-            dateList
+             WHERE ${sql.dateFormat("testedAt", "%Y-%m-%d")} IN (${placeholders})
+               AND (vehicleType IS NULL OR UPPER(TRIM(vehicleType)) <> UPPER(?))`,
+            [...dateList, CO_PACKING_TYPE]
         ),
     ]);
 
@@ -262,8 +277,9 @@ exports.getRoutesForDate = async (date) => {
             `SELECT DISTINCT UPPER(${sql.trim("routeName")}) AS route
              FROM WeighBridgeEntries
              WHERE ${sql.dateFormat("createdAt", "%Y-%m-%d")} = ?
-               AND routeName IS NOT NULL AND ${sql.trim("routeName")} != ''`,
-            [day]
+               AND routeName IS NOT NULL AND ${sql.trim("routeName")} != ''
+               AND (vehicleType IS NULL OR UPPER(TRIM(vehicleType)) <> UPPER(?))`,
+            [day, CO_PACKING_TYPE]
         ),
         pool.execute(
             `SELECT DISTINCT UPPER(${sql.trim("routeNo")}) AS route
@@ -276,8 +292,9 @@ exports.getRoutesForDate = async (date) => {
             `SELECT DISTINCT UPPER(${sql.trim("routeNo")}) AS route
              FROM LaboratoryTests
              WHERE ${sql.dateFormat("testedAt", "%Y-%m-%d")} = ?
-               AND routeNo IS NOT NULL AND ${sql.trim("routeNo")} != ''`,
-            [day]
+               AND routeNo IS NOT NULL AND ${sql.trim("routeNo")} != ''
+               AND (vehicleType IS NULL OR UPPER(TRIM(vehicleType)) <> UPPER(?))`,
+            [day, CO_PACKING_TYPE]
         ),
     ]);
 
@@ -298,16 +315,20 @@ exports.getFortnightReport = async (startDate, endDate) => {
 
     const [labResult, wbResult, mcResult, gateResult] = await Promise.all([
         pool.execute(
-            `SELECT ${sql.dateFormat("testedAt", "%Y-%m-%d")} AS day, routeNo, vehicleNumber, clr, fat, snf, kgFat, kgSnf, totalKgFat, totalKgSNF
+            `SELECT ${sql.dateFormat("testedAt", "%Y-%m-%d")} AS day, routeNo, vehicleNumber, clr, fat, snf, kgFat, kgSnf, totalKgFat, totalKgSNF,
+                    vehicleType, entryCategory
              FROM LaboratoryTests
-             WHERE ${sql.dateFormat("testedAt", "%Y-%m-%d")} >= ? AND ${sql.dateFormat("testedAt", "%Y-%m-%d")} <= ?`,
-            [start, end]
+             WHERE ${sql.dateFormat("testedAt", "%Y-%m-%d")} >= ? AND ${sql.dateFormat("testedAt", "%Y-%m-%d")} <= ?
+               AND (vehicleType IS NULL OR UPPER(TRIM(vehicleType)) <> UPPER(?))`,
+            [start, end, CO_PACKING_TYPE]
         ),
         pool.execute(
-            `SELECT ${sql.dateFormat("createdAt", "%Y-%m-%d")} AS day, routeName, vehicleNumber, netWeight
+            `SELECT ${sql.dateFormat("createdAt", "%Y-%m-%d")} AS day, routeName, vehicleNumber, netWeight,
+                    vehicleType, entryCategory
              FROM WeighBridgeEntries
-             WHERE ${sql.dateFormat("createdAt", "%Y-%m-%d")} >= ? AND ${sql.dateFormat("createdAt", "%Y-%m-%d")} <= ?`,
-            [start, end]
+             WHERE ${sql.dateFormat("createdAt", "%Y-%m-%d")} >= ? AND ${sql.dateFormat("createdAt", "%Y-%m-%d")} <= ?
+               AND (vehicleType IS NULL OR UPPER(TRIM(vehicleType)) <> UPPER(?))`,
+            [start, end, CO_PACKING_TYPE]
         ),
         pool.execute(
             `SELECT ${sql.dateFormat("reportDate", "%Y-%m-%d")} AS day, routeNo, vehicleNumber, eveningKg, morningKg
@@ -316,10 +337,11 @@ exports.getFortnightReport = async (startDate, endDate) => {
             [start, end]
         ),
         pool.execute(
-            `SELECT ${sql.dateFormat("entryDateTime", "%Y-%m-%d")} AS day, vehicleNumber
+            `SELECT ${sql.dateFormat("entryDateTime", "%Y-%m-%d")} AS day, vehicleNumber, vehicleType, entryCategory
              FROM GateEntries
-             WHERE ${sql.dateFormat("entryDateTime", "%Y-%m-%d")} >= ? AND ${sql.dateFormat("entryDateTime", "%Y-%m-%d")} <= ?`,
-            [start, end]
+             WHERE ${sql.dateFormat("entryDateTime", "%Y-%m-%d")} >= ? AND ${sql.dateFormat("entryDateTime", "%Y-%m-%d")} <= ?
+               AND (vehicleType IS NULL OR UPPER(TRIM(vehicleType)) <> UPPER(?))`,
+            [start, end, CO_PACKING_TYPE]
         ),
     ]);
 
@@ -562,11 +584,13 @@ exports.getExtraReport = async (dates, routes) => {
                     intermediateWeight1, dumpPosition1,
                     intermediateWeight2, dumpPosition2,
                     intermediateWeight3, dumpPosition3,
+                    vehicleType, entryCategory, purpose,
                     ${sql.dateFormat("createdAt", "%Y-%m-%d")} AS day
              FROM WeighBridgeEntries
              WHERE ${sql.dateFormat("createdAt", "%Y-%m-%d")} IN (${placeholders})
-               AND netWeight IS NOT NULL`,
-            dateList
+               AND netWeight IS NOT NULL
+               AND (vehicleType IS NULL OR UPPER(TRIM(vehicleType)) <> UPPER(?))`,
+            [...dateList, CO_PACKING_TYPE]
         ),
         pool.execute(
             `SELECT vehicleNumber, routeNo,
@@ -579,10 +603,12 @@ exports.getExtraReport = async (dates, routes) => {
         pool.execute(
             `SELECT labTestId, vehicleNumber, routeNo, taluk, temperature, clr, fat, snf, alcohol,
                     kgFat, kgSnf, totalKgFat, totalKgSNF, testedByName,
+                    vehicleType, entryCategory, sealNumbers,
                     ${sql.dateFormat("testedAt", "%Y-%m-%d")} AS day
              FROM LaboratoryTests
-             WHERE ${sql.dateFormat("testedAt", "%Y-%m-%d")} IN (${placeholders})`,
-            dateList
+             WHERE ${sql.dateFormat("testedAt", "%Y-%m-%d")} IN (${placeholders})
+               AND (vehicleType IS NULL OR UPPER(TRIM(vehicleType)) <> UPPER(?))`,
+            [...dateList, CO_PACKING_TYPE]
         ),
         pool.execute(
             `SELECT lct.labTestId, lct.vehicleNumber, lt.routeNo, lct.compartment,
@@ -810,4 +836,110 @@ exports.getExtraReport = async (dates, routes) => {
     });
 
     return { dates: dateList, days, routeCount: allKeys.length };
+};
+
+/* ==========================================================
+   DAILY LOADING REPORT — BMC Loading weighbridge rows for a
+   single date (includes Co-Packing), joined to lab + samples.
+========================================================== */
+exports.getDailyLoadingReport = async (date) => {
+    const pool = await connectDB();
+    const day = dayString(date);
+    if (!day) throw new Error("Valid date is required.");
+
+    const [wbRows, labRows, sampleRows] = await Promise.all([
+        pool.execute(
+            `SELECT wbEntryId, vehicleNumber, routeName, purpose, entryCategory, vehicleType,
+                    grossWeight AS initialWeight, tareWeight AS finalWeight, netWeight,
+                    ${sql.dateFormat("createdAt", "%Y-%m-%d")} AS day
+             FROM WeighBridgeEntries
+             WHERE ${sql.dateFormat("createdAt", "%Y-%m-%d")} = ?
+               AND (isDeleted IS NULL OR isDeleted = 0)
+               AND (netWeight IS NOT NULL OR tareWeight IS NOT NULL)
+                 AND (
+                     UPPER(COALESCE(NULLIF(entryCategory, ''), '')) = 'BMC LOADING'
+                  OR UPPER(COALESCE(NULLIF(purpose, ''), '')) = 'LOADING'
+                  OR UPPER(COALESCE(NULLIF(purpose, ''), '')) = UPPER(?)
+                  OR UPPER(COALESCE(NULLIF(vehicleType, ''), '')) = UPPER(?)
+                )
+              ORDER BY createdAt ASC, id ASC`,
+            [day, CO_PACKING_TYPE, CO_PACKING_TYPE]
+        ),
+        pool.execute(
+            `SELECT labTestId, vehicleNumber, routeNo, temperature, clr, fat, snf, testResult,
+                    vehicleType, entryCategory, sealNumbers,
+                    ${sql.dateFormat("testedAt", "%Y-%m-%d")} AS day
+             FROM LaboratoryTests
+             WHERE ${sql.dateFormat("testedAt", "%Y-%m-%d")} = ?
+               AND (isDeleted IS NULL OR isDeleted = 0)`,
+            [day]
+        ),
+        pool.execute(
+            `SELECT sampleId, vehicleNumber, routeNo, temperature,
+                    ${sql.dateFormat("collectedAt", "%Y-%m-%d")} AS day
+             FROM SampleCollections
+             WHERE ${sql.dateFormat("collectedAt", "%Y-%m-%d")} = ?
+               AND (isDeleted IS NULL OR isDeleted = 0)`,
+            [day]
+        ).catch(() => []),
+    ]);
+
+    const up = (v) => String(v || "").trim().toUpperCase();
+    const labByVehicle = new Map();
+    for (const l of labRows || []) {
+        const key = up(l.vehicleNumber);
+        if (key && !labByVehicle.has(key)) labByVehicle.set(key, l);
+    }
+    const sampleByVehicle = new Map();
+    for (const s of sampleRows || []) {
+        const key = up(s.vehicleNumber);
+        if (key && !sampleByVehicle.has(key)) sampleByVehicle.set(key, s);
+    }
+
+    const rows = (wbRows || []).map((w, index) => {
+        const lab = labByVehicle.get(up(w.vehicleNumber)) || null;
+        const sample = sampleByVehicle.get(up(w.vehicleNumber)) || null;
+        const isCoPacking = up(w.vehicleType) === up(CO_PACKING_TYPE);
+        const entryType = w.entryCategory
+            || (isCoPacking || up(w.purpose) === "LOADING" || up(w.purpose) === up(CO_PACKING_TYPE)
+                ? "BMC Loading"
+                : "BMC Unloading");
+        let status = lab?.testResult || lab?.status || "";
+        if (!status) status = w.netWeight != null || w.finalWeight != null ? "Completed" : "Pending";
+        return {
+            slNo: index + 1,
+            date: w.day || day,
+            vehicleNumber: w.vehicleNumber,
+            entryType,
+            isCoPacking,
+            route: isCoPacking ? "" : (w.routeName || lab?.routeNo || sample?.routeNo || ""),
+            initialWT: toNum(w.initialWeight),
+            finalWT: toNum(w.finalWeight),
+            netWeight: toNum(w.netWeight),
+            sampleId: sample?.sampleId || null,
+            temperature: lab?.temperature ?? sample?.temperature ?? null,
+            clr: lab?.clr ?? null,
+            fat: lab?.fat ?? null,
+            status,
+        };
+    });
+
+    const netVals = rows.map((r) => r.netWeight).filter((n) => n !== null);
+    const tempVals = rows.map((r) => r.temperature).map(toNum).filter((n) => n !== null);
+    const clrVals = rows.map((r) => r.clr).map(toNum).filter((n) => n !== null);
+    const fatVals = rows.map((r) => r.fat).map(toNum).filter((n) => n !== null);
+    const avg = (arr) => (arr.length ? arr.reduce((a, b) => a + b, 0) / arr.length : 0);
+
+    return {
+        date: day,
+        vehicleCount: rows.length,
+        rows,
+        totals: {
+            totalNet: round2(netVals.reduce((a, b) => a + b, 0)),
+            vehicleCount: rows.length,
+            avgTemp: round2(avg(tempVals), 1),
+            avgClr: round2(avg(clrVals)),
+            avgFat: round2(avg(fatVals)),
+        },
+    };
 };

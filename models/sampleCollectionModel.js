@@ -215,6 +215,9 @@ const migrateSealAndCompartmentColumns = async (pool) => {
     };
     await addCol("sealStatus", "sealStatus VARCHAR(50) NULL");
     await addCol("sealDiscrepancyReason", "sealDiscrepancyReason LONGTEXT NULL");
+    await addCol("entryCategory", "entryCategory VARCHAR(30) NULL");
+    await addCol("vehicleType", "vehicleType VARCHAR(50) NULL");
+    await addCol("cipDone", "cipDone TINYINT(1) DEFAULT 0");
 };
 
 const saveCompartments = async (pool, data, collectedAt) => {
@@ -292,6 +295,7 @@ exports.create = async (data) => {
     await migrateRemarksColumn(pool);
     await migrateAdulterationColumns(pool);
     await migrateAdulterationValueColumns(pool);
+    await migrateSealAndCompartmentColumns(pool);
     await ensureSoftDeleteColumns(pool);
     await ensureSearchIndexes(pool);
     const collectedAt = data.collectedAt && !Number.isNaN(new Date(data.collectedAt).getTime())
@@ -300,6 +304,27 @@ exports.create = async (data) => {
     const sealNumbers = Array.isArray(data.sealNumbers) ? JSON.stringify(data.sealNumbers) : (data.sealNumbers || "[]");
     const sealStatus = data.sealStatus || "Intact";
     const sealDiscrepancyReason = data.sealDiscrepancyReason || null;
+
+    const vehicleType = data.vehicleType || "";
+    const isCoPacking = vehicleType === "Load Tanker (Co-Packing)";
+    const isOtherVehicles = vehicleType === "Other Vehicles";
+    let entryCategory = data.entryCategory || null;
+    let routeNo = data.routeNo || "";
+    const cipDone = data.cipDone ? 1 : 0;
+
+    if (isCoPacking) {
+        entryCategory = "BMC Loading";
+        // CIP cleaning is step 5 of the Co-Packing flow — required before sample.
+        if (!cipDone) {
+            throw new Error("CIP cleaning must be completed before sample collection for Co-Packing tankers.");
+        }
+    } else if (isOtherVehicles) {
+        entryCategory = "Other Vehicle";
+        // Other Vehicles: gate + weighbridge only — block sample collection.
+        throw new Error("Sample collection is not allowed for Other Vehicles (gate + weighbridge only).");
+    } else if (!entryCategory && (data.weighbridgePurpose === "Loading" || data.weighbridgePurpose === "Load Tanker (Co-Packing)")) {
+        entryCategory = "BMC Loading";
+    }
 
     let targetSampleId = data.sampleId;
     const existingBySample = await pool.execute(
@@ -323,13 +348,14 @@ exports.create = async (data) => {
                 `UPDATE SampleCollections SET
                     vehicleNumber = ?, gateEntryId = ?, wbEntryId = ?, routeNo = ?, taluk = ?, materialType = ?,
                     sealNumbers = ?, sealStatus = ?, sealDiscrepancyReason = ?, quantity = ?, temperature = ?,
-                    remarks = ?, sampleCollectedBy = ?, sampleCollectedByEmpId = ?, collectedAt = ?
+                    remarks = ?, sampleCollectedBy = ?, sampleCollectedByEmpId = ?, collectedAt = ?,
+                    entryCategory = ?, vehicleType = ?, cipDone = ?
                  WHERE sampleId = ?`,
                 [
                     String(data.vehicleNumber).toUpperCase(),
                     data.gateEntryId || "",
                     data.wbEntryId || "",
-                    data.routeNo || "",
+                    routeNo,
                     data.taluk || "",
                     data.materialType || "",
                     sealNumbers,
@@ -341,6 +367,9 @@ exports.create = async (data) => {
                     data.sampleCollectedBy || "",
                     data.sampleCollectedByEmpId || "",
                     collectedAt,
+                    entryCategory,
+                    vehicleType || null,
+                    cipDone,
                     targetSampleId,
                 ]
             );
@@ -348,14 +377,15 @@ exports.create = async (data) => {
             await pool.execute(
                 `INSERT INTO SampleCollections
                  (sampleId, vehicleNumber, gateEntryId, wbEntryId, routeNo, taluk, materialType, sealNumbers,
-                  sealStatus, sealDiscrepancyReason, quantity, temperature, remarks, sampleCollectedBy, sampleCollectedByEmpId, collectedAt)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                  sealStatus, sealDiscrepancyReason, quantity, temperature, remarks, sampleCollectedBy, sampleCollectedByEmpId, collectedAt,
+                  entryCategory, vehicleType, cipDone)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
                 [
                     data.sampleId,
                     String(data.vehicleNumber).toUpperCase(),
                     data.gateEntryId || "",
                     data.wbEntryId || "",
-                    data.routeNo || "",
+                    routeNo,
                     data.taluk || "",
                     data.materialType || "",
                     sealNumbers,
@@ -367,6 +397,9 @@ exports.create = async (data) => {
                     data.sampleCollectedBy || "",
                     data.sampleCollectedByEmpId || "",
                     collectedAt,
+                    entryCategory,
+                    vehicleType || null,
+                    cipDone,
                 ]
             );
         }
@@ -375,13 +408,14 @@ exports.create = async (data) => {
             `UPDATE SampleCollections SET
                 vehicleNumber = ?, gateEntryId = ?, wbEntryId = ?, routeNo = ?, taluk = ?, materialType = ?,
                 sealNumbers = ?, sealStatus = ?, sealDiscrepancyReason = ?, quantity = ?, temperature = ?,
-                remarks = ?, sampleCollectedBy = ?, sampleCollectedByEmpId = ?, collectedAt = ?
+                remarks = ?, sampleCollectedBy = ?, sampleCollectedByEmpId = ?, collectedAt = ?,
+                entryCategory = ?, vehicleType = ?, cipDone = ?
              WHERE sampleId = ?`,
             [
                 String(data.vehicleNumber).toUpperCase(),
                 data.gateEntryId || "",
                 data.wbEntryId || "",
-                data.routeNo || "",
+                routeNo,
                 data.taluk || "",
                 data.materialType || "",
                 sealNumbers,
@@ -393,6 +427,9 @@ exports.create = async (data) => {
                 data.sampleCollectedBy || "",
                 data.sampleCollectedByEmpId || "",
                 collectedAt,
+                entryCategory,
+                vehicleType || null,
+                cipDone,
                 data.sampleId,
             ]
         );
@@ -400,7 +437,16 @@ exports.create = async (data) => {
 
     await saveCompartments(pool, data, collectedAt);
 
-    return { ...data, sampleId: targetSampleId, vehicleNumber: String(data.vehicleNumber).toUpperCase(), collectedAt };
+    return {
+        ...data,
+        sampleId: targetSampleId,
+        vehicleNumber: String(data.vehicleNumber).toUpperCase(),
+        collectedAt,
+        routeNo,
+        entryCategory,
+        vehicleType: vehicleType || null,
+        cipDone: Boolean(cipDone),
+    };
 };
 
 // Convert a client wall-clock date ("YYYY-MM-DD") plus the client's UTC offset

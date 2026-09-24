@@ -112,6 +112,31 @@ const ensureAllocationDateColumn = async (pool) => {
     }
 };
 
+const ensureEntryCategoryColumn = async (pool) => {
+    try {
+        const cols = await pool.execute(
+            "SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = 'GateEntries' AND COLUMN_NAME = 'entryCategory'"
+        );
+        if (cols.length === 0) {
+            await pool.execute("ALTER TABLE GateEntries ADD entryCategory VARCHAR(30) NULL");
+        }
+    } catch (e) {
+        console.warn("[GateEntries] entryCategory column migration warning:", e.message);
+    }
+};
+
+const CO_PACKING_TYPE = "Load Tanker (Co-Packing)";
+const OTHER_VEHICLES_TYPE = "Other Vehicles";
+
+const entryCategoryForVehicleType = (vehicleType) => {
+    if (vehicleType === CO_PACKING_TYPE) return "BMC Loading";
+    if (vehicleType === OTHER_VEHICLES_TYPE) return "Other Vehicle";
+    return null;
+};
+
+const skipsRouteAndSeals = (vehicleType) =>
+    vehicleType === CO_PACKING_TYPE || vehicleType === OTHER_VEHICLES_TYPE;
+
 const extractUserDetails = (createdBy) => {
     let createdByInt = null;
     let createdByName = null;
@@ -142,6 +167,7 @@ exports.create = async (data) => {
 
     const pool = await connectDB();
     await ensureRouteColumn(pool);
+    await ensureEntryCategoryColumn(pool);
     await ensureCreatedByDetailColumns(pool);
     await ensureSearchIndexes(pool);
 
@@ -155,13 +181,18 @@ exports.create = async (data) => {
         sealNumbersJson = data.sealNumbers;
     }
 
+    const vehicleType = data.vehicleType || "";
+    const derivedCategory = data.entryCategory || entryCategoryForVehicleType(vehicleType);
+    const forceSkip = skipsRouteAndSeals(vehicleType);
+    const routeName = forceSkip ? "" : (data.routeName || "");
+    if (forceSkip) sealNumbersJson = "[]";
+    const sealStatus = forceSkip ? null : (data.sealStatus || "Intact");
+
     let entryDate = new Date();
     if (data.entryDateTime) {
         const parsed = parseCustomDate(data.entryDateTime);
         if (parsed) entryDate = parsed;
     }
-    console.log("data", data);
-    console.log(data.entryDateTime, typeof data.entryDateTime, entryDate, typeof entryDate)
 
     const { createdByInt, createdByName, createdByEmpId, createdByEmail, createdByDept } =
         extractUserDetails(data.createdBy);
@@ -172,20 +203,20 @@ exports.create = async (data) => {
           driverName, driverMobile, supplierName, materialType, routeName,
           sealNumbers, sealStatus, spinnerSet, tyre, jack, otherItems,
           createdBy, createdByName, createdByEmpId, createdByEmail, createdByDept,
-          allocationDate)
-         VALUES (?, ?, 'Gate Entered', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          allocationDate, entryCategory)
+         VALUES (?, ?, 'Gate Entered', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
             data.gateEntryId,
             entryDate,
             data.vehicleNumber,
-            data.vehicleType,
+            vehicleType,
             data.driverName,
             data.driverMobile || "",
             data.supplierName || "",
             data.materialType || "",
-            data.routeName || "",
+            routeName,
             sealNumbersJson,
-            data.sealStatus || "Intact",
+            sealStatus,
             data.spinnerSet || "",
             tyreVal,
             jackVal,
@@ -195,14 +226,15 @@ exports.create = async (data) => {
             createdByEmpId,
             createdByEmail,
             createdByDept,
-            data.allocationDate || null,
+            forceSkip ? null : (data.allocationDate || null),
+            derivedCategory || null,
         ]
     );
 
     let parsedSeals = [];
-    if (Array.isArray(data.sealNumbers)) parsedSeals = data.sealNumbers;
+    if (Array.isArray(data.sealNumbers)) parsedSeals = forceSkip ? [] : data.sealNumbers;
     else if (typeof data.sealNumbers === "string") {
-        try { parsedSeals = JSON.parse(data.sealNumbers); } catch { parsedSeals = []; }
+        try { parsedSeals = forceSkip ? [] : JSON.parse(data.sealNumbers); } catch { parsedSeals = []; }
     }
     await syncGateSeals(pool, {
         gateEntryId: data.gateEntryId,
@@ -211,7 +243,7 @@ exports.create = async (data) => {
         entryDateTime: entryDate,
     });
 
-    return data;
+    return { ...data, entryCategory: derivedCategory || null, routeName, sealNumbers: parsedSeals, sealStatus };
 };
 
 
@@ -219,6 +251,7 @@ exports.getAll = async ({ startDate, endDate, search } = {}) => {
 
     const pool = await connectDB();
     await ensureRouteColumn(pool);
+    await ensureEntryCategoryColumn(pool);
     await ensureSoftDeleteColumns(pool);
     await ensureCreatedByDetailColumns(pool);
     await ensureSearchIndexes(pool);
@@ -231,7 +264,7 @@ exports.getAll = async ({ startDate, endDate, search } = {}) => {
             ge.routeName, ge.sealNumbers, ge.sealStatus, ge.spinnerSet,
             ge.tyre, ge.jack, ge.otherItems, ge.createdBy, ge.createdByName,
             ge.createdByEmpId, ge.createdByEmail, ge.createdByDept,
-            ge.createdAt, ge.updatedAt, ge.allocationDate
+            ge.createdAt, ge.updatedAt, ge.allocationDate, ge.entryCategory
         FROM GateEntries ge
         WHERE 1 = 1 AND (ge.isDeleted IS NULL OR ge.isDeleted = 0)
     `;
@@ -551,6 +584,7 @@ exports.delete = async (id, user = null, ipAddress = null) => {
 exports.update = async (id, data) => {
     const pool = await connectDB();
     await ensureRouteColumn(pool);
+    await ensureEntryCategoryColumn(pool);
     await ensureCreatedByDetailColumns(pool);
     await ensureAllocationDateColumn(pool);
     await ensureSearchIndexes(pool);
@@ -565,9 +599,16 @@ exports.update = async (id, data) => {
     }
 
     const existing = lookupResult[0];
+    const nextVehicleType = data.vehicleType || existing.vehicleType;
+    const forceSkip = skipsRouteAndSeals(nextVehicleType);
+    const nextCategory = data.entryCategory !== undefined
+        ? data.entryCategory
+        : (entryCategoryForVehicleType(nextVehicleType) || existing.entryCategory || null);
 
     let sealNumbersJson = existing.sealNumbers;
-    if (Array.isArray(data.sealNumbers)) {
+    if (forceSkip) {
+        sealNumbersJson = "[]";
+    } else if (Array.isArray(data.sealNumbers)) {
         sealNumbersJson = JSON.stringify(data.sealNumbers);
     } else if (typeof data.sealNumbers === "string") {
         sealNumbersJson = data.sealNumbers;
@@ -589,32 +630,34 @@ exports.update = async (id, data) => {
             driverName = ?, driverMobile = ?, supplierName = ?, materialType = ?,
             routeName = ?, sealNumbers = ?, sealStatus = ?,
             spinnerSet = ?, tyre = ?, jack = ?, otherItems = ?,
-            entryDateTime = ?, allocationDate = ?, updatedAt = ?
+            entryDateTime = ?, allocationDate = ?, entryCategory = ?, updatedAt = ?
          WHERE gateEntryId = ?`,
         [
             data.vehicleStatus || existing.vehicleStatus,
             (data.vehicleNumber || existing.vehicleNumber || "").toUpperCase().trim(),
-            data.vehicleType || existing.vehicleType,
+            nextVehicleType,
             data.driverName || existing.driverName,
             data.driverMobile !== undefined ? data.driverMobile : existing.driverMobile,
             data.supplierName !== undefined ? data.supplierName : existing.supplierName,
             data.materialType !== undefined ? data.materialType : existing.materialType,
-            data.routeName !== undefined ? data.routeName : existing.routeName,
+            forceSkip ? "" : (data.routeName !== undefined ? data.routeName : existing.routeName),
             sealNumbersJson,
-            data.sealStatus || existing.sealStatus || "Intact",
+            forceSkip ? null : (data.sealStatus || existing.sealStatus || "Intact"),
             data.spinnerSet !== undefined ? data.spinnerSet : existing.spinnerSet,
             tyreVal,
             jackVal,
             data.otherItems !== undefined ? data.otherItems : existing.otherItems,
             entryDate,
-            data.allocationDate || existing.allocationDate || null,
+            forceSkip ? null : (data.allocationDate || existing.allocationDate || null),
+            nextCategory,
             now,
             existing.gateEntryId
         ]
     );
 
     let parsedSeals = [];
-    if (Array.isArray(data.sealNumbers)) parsedSeals = data.sealNumbers;
+    if (forceSkip) parsedSeals = [];
+    else if (Array.isArray(data.sealNumbers)) parsedSeals = data.sealNumbers;
     else if (typeof data.sealNumbers === "string") {
         try { parsedSeals = JSON.parse(data.sealNumbers); } catch { parsedSeals = []; }
     }
@@ -625,5 +668,5 @@ exports.update = async (id, data) => {
         entryDateTime: entryDate,
     });
 
-    return { ...existing, ...data, gateEntryId: existing.gateEntryId, updatedAt: now };
+    return { ...existing, ...data, entryCategory: nextCategory, gateEntryId: existing.gateEntryId, updatedAt: now };
 };
