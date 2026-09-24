@@ -40,4 +40,61 @@ router.post("/rejections", storageStaff, body("vehicleNumber").trim().notEmpty()
 router.get("/tank-dumps", controller.dumpHistory);
 router.get("/tested-vehicles", controller.listTestedVehicles);
 
+/* Rinse Tanks */
+router.get("/rinse-tanks", controller.listRinseTanks);
+router.post("/rinse-tanks", storageAdmin, body("label").trim().notEmpty(), body("capacity").isFloat({ gt: 0 }), controller.validateDump, controller.createRinseTank);
+router.put("/rinse-tanks/:id", storageAdmin, controller.updateRinseTank);
+router.delete("/rinse-tanks/:id", storageAdmin, controller.deactivateRinseTank);
+
+/* Department Milk Allotment & Return */
+router.post(
+    "/department-allotments",
+    canAccess(["products", "production", "storage", "stores", "stores_silo", "storessilo", "admin", "management"]),
+    body("department").trim().notEmpty(),
+    body("productName").trim().notEmpty(),
+    body("sourceSiloId").notEmpty(),
+    body("quantity").isFloat({ gt: 0 }),
+    controller.validateDump,
+    controller.allotMilkToDepartment
+);
+router.post(
+    "/department-returns",
+    canAccess(["products", "production", "storage", "stores", "stores_silo", "storessilo", "admin", "management"]),
+    body("allotmentId").notEmpty(),
+    body("usedQuantity").isFloat({ min: 0 }),
+    body("returnedQuantity").isFloat({ min: 0 }),
+    controller.validateDump,
+    controller.returnDepartmentMilk
+);
+router.get("/department-allotments", controller.listDepartmentAllotments);
+
+/* Rinse Tank Push to Tanks or Silos */
+router.post(
+    "/rinse-push",
+    canAccess(["products", "production", "storage", "stores", "stores_silo", "storessilo", "admin", "management"]),
+    body("rinseTankId").notEmpty(),
+    body("destinationType").trim().notEmpty(),
+    body("destinationId").notEmpty(),
+    body("quantity").isFloat({ gt: 0 }),
+    controller.validateDump,
+    controller.pushRinseTankMilk
+);
+router.get("/rinse-transfers", controller.listRinseTransfers);
+
+/* Tanker Outbound Loading (After CIP Cleaned Only) */
+router.post(
+    "/tanker-load",
+    storageStaff,
+    body("vehicleNumber").trim().notEmpty(),
+    body("sourceId").notEmpty(),
+    body("quantity").isFloat({ gt: 0 }),
+    controller.validateDump,
+    controller.loadMilkToTanker
+);
+router.get("/tanker-loads", controller.listTankerLoadings);
+router.get("/cleaned-tankers", controller.listCleanedTankers);
+
+/* Tank to Silo Loads (with timing) */
+router.get("/tank-to-silo-loads", controller.listTankToSiloLoads);
+
 module.exports = router;

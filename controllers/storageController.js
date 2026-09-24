@@ -26,6 +26,29 @@ exports.rejectVehicle = handle((req) => Storage.rejectVehicle(req.body, req.sess
 exports.dumpHistory = handle((req) => Storage.dumpHistory(req.query));
 exports.listTestedVehicles = handle(() => Storage.listTestedVehicles());
 
+/* Rinse Tanks */
+exports.listRinseTanks = handle(() => Storage.listRinseTanks());
+exports.createRinseTank = handle((req) => Storage.createRinseTank(req.body, req.session.user));
+exports.updateRinseTank = handle((req) => Storage.updateRinseTank(req.params.id, req.body, req.session.user));
+exports.deactivateRinseTank = handle((req) => Storage.deactivateRinseTank(req.params.id, req.session.user));
+
+/* Department Allotment & Return */
+exports.allotMilkToDepartment = handle((req) => Storage.allotMilkToDepartment(req.body, req.session.user));
+exports.returnDepartmentMilk = handle((req) => Storage.returnDepartmentMilk(req.body, req.session.user));
+exports.listDepartmentAllotments = handle((req) => Storage.listDepartmentAllotments(req.query));
+
+/* Rinse Tank Push */
+exports.pushRinseTankMilk = handle((req) => Storage.pushRinseTankMilk(req.body, req.session.user));
+exports.listRinseTransfers = handle((req) => Storage.listRinseTransfers(req.query));
+
+/* Tanker Loading */
+exports.loadMilkToTanker = handle((req) => Storage.loadMilkToTanker(req.body, req.session.user));
+exports.listTankerLoadings = handle((req) => Storage.listTankerLoadings(req.query));
+exports.listCleanedTankers = handle(() => Storage.listCleanedTankers());
+
+/* Tank to Silo Loads */
+exports.listTankToSiloLoads = handle(() => Storage.listTankToSiloLoads());
+
 exports.validateDump = (req, res, next) => {
     const errors = validationResult(req);
     if (!errors.isEmpty()) return res.status(400).json({ success: false, message: errors.array().map((e) => e.msg).join(", ") });

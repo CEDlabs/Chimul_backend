@@ -18,22 +18,24 @@ const ensureTables = async (pool) => {
             INDEX idx_fulfillment_silo (siloId)
         )
     `);
-    try { await pool.execute("ALTER TABLE SiloFulfillments ADD COLUMN notes LONGTEXT NULL"); } catch {}
-    try { await pool.execute("ALTER TABLE SiloFulfillments ADD COLUMN milkQuantity DECIMAL(12,3) NULL"); } catch {}
-    try { await pool.execute("ALTER TABLE SiloFulfillments ADD COLUMN milkClr DECIMAL(8,3) NULL"); } catch {}
-    try { await pool.execute("ALTER TABLE SiloFulfillments ADD COLUMN milkFat DECIMAL(8,3) NULL"); } catch {}
-    try { await pool.execute("ALTER TABLE SiloFulfillments ADD COLUMN milkSnf DECIMAL(8,3) NULL"); } catch {}
-    try { await pool.execute("ALTER TABLE SiloFulfillments ADD COLUMN milkKgFat DECIMAL(12,3) NULL"); } catch {}
-    try { await pool.execute("ALTER TABLE SiloFulfillments ADD COLUMN milkKgSnf DECIMAL(12,3) NULL"); } catch {}
-    try { await pool.execute("ALTER TABLE SiloFulfillments ADD COLUMN additiveQuantity DECIMAL(12,3) NULL"); } catch {}
-    try { await pool.execute("ALTER TABLE SiloFulfillments ADD COLUMN additiveClr DECIMAL(8,3) NULL"); } catch {}
-    try { await pool.execute("ALTER TABLE SiloFulfillments ADD COLUMN additiveFat DECIMAL(8,3) NULL"); } catch {}
-    try { await pool.execute("ALTER TABLE SiloFulfillments ADD COLUMN additiveSnf DECIMAL(8,3) NULL"); } catch {}
-    try { await pool.execute("ALTER TABLE SiloFulfillments ADD COLUMN additiveKgFat DECIMAL(12,3) NULL"); } catch {}
-    try { await pool.execute("ALTER TABLE SiloFulfillments ADD COLUMN additiveKgSnf DECIMAL(12,3) NULL"); } catch {}
-    try { await pool.execute("ALTER TABLE SiloFulfillments ADD COLUMN totalQuantity DECIMAL(12,3) NULL"); } catch {}
-    try { await pool.execute("ALTER TABLE SiloFulfillments ADD COLUMN totalKgFat DECIMAL(12,3) NULL"); } catch {}
-    try { await pool.execute("ALTER TABLE SiloFulfillments ADD COLUMN totalKgSnf DECIMAL(12,3) NULL"); } catch {}
+    try { await pool.execute("ALTER TABLE SiloFulfillments ADD COLUMN notes LONGTEXT NULL"); } catch { }
+    try { await pool.execute("ALTER TABLE SiloFulfillments ADD COLUMN milkQuantity DECIMAL(12,3) NULL"); } catch { }
+    try { await pool.execute("ALTER TABLE SiloFulfillments ADD COLUMN milkClr DECIMAL(8,3) NULL"); } catch { }
+    try { await pool.execute("ALTER TABLE SiloFulfillments ADD COLUMN milkFat DECIMAL(8,3) NULL"); } catch { }
+    try { await pool.execute("ALTER TABLE SiloFulfillments ADD COLUMN milkSnf DECIMAL(8,3) NULL"); } catch { }
+    try { await pool.execute("ALTER TABLE SiloFulfillments ADD COLUMN milkKgFat DECIMAL(12,3) NULL"); } catch { }
+    try { await pool.execute("ALTER TABLE SiloFulfillments ADD COLUMN milkKgSnf DECIMAL(12,3) NULL"); } catch { }
+    try { await pool.execute("ALTER TABLE SiloFulfillments ADD COLUMN additiveQuantity DECIMAL(12,3) NULL"); } catch { }
+    try { await pool.execute("ALTER TABLE SiloFulfillments ADD COLUMN additiveClr DECIMAL(8,3) NULL"); } catch { }
+    try { await pool.execute("ALTER TABLE SiloFulfillments ADD COLUMN additiveFat DECIMAL(8,3) NULL"); } catch { }
+    try { await pool.execute("ALTER TABLE SiloFulfillments ADD COLUMN additiveSnf DECIMAL(8,3) NULL"); } catch { }
+    try { await pool.execute("ALTER TABLE SiloFulfillments ADD COLUMN additiveKgFat DECIMAL(12,3) NULL"); } catch { }
+    try { await pool.execute("ALTER TABLE SiloFulfillments ADD COLUMN additiveKgSnf DECIMAL(12,3) NULL"); } catch { }
+    try { await pool.execute("ALTER TABLE SiloFulfillments ADD COLUMN totalQuantity DECIMAL(12,3) NULL"); } catch { }
+    try { await pool.execute("ALTER TABLE SiloFulfillments ADD COLUMN totalKgFat DECIMAL(12,3) NULL"); } catch { }
+    try { await pool.execute("ALTER TABLE SiloFulfillments ADD COLUMN totalKgSnf DECIMAL(12,3) NULL"); } catch { }
+    try { await pool.execute("ALTER TABLE SiloFulfillments ADD COLUMN startTime DATETIME NULL"); } catch { }
+    try { await pool.execute("ALTER TABLE SiloFulfillments ADD COLUMN endTime DATETIME NULL"); } catch { }
 
     await pool.execute(`
         CREATE TABLE IF NOT EXISTS SiloFulfillmentSources (
@@ -55,11 +57,11 @@ const ensureTables = async (pool) => {
             INDEX idx_additive_fulfillment (fulfillmentId)
         )
     `);
-    try { await pool.execute("ALTER TABLE SiloFulfillmentAdditives ADD COLUMN clr DECIMAL(8,3) NULL"); } catch {}
-    try { await pool.execute("ALTER TABLE SiloFulfillmentAdditives ADD COLUMN fat DECIMAL(8,3) NULL"); } catch {}
-    try { await pool.execute("ALTER TABLE SiloFulfillmentAdditives ADD COLUMN snf DECIMAL(8,3) NULL"); } catch {}
-    try { await pool.execute("ALTER TABLE SiloFulfillmentAdditives ADD COLUMN kgFat DECIMAL(12,3) NULL"); } catch {}
-    try { await pool.execute("ALTER TABLE SiloFulfillmentAdditives ADD COLUMN kgSnf DECIMAL(12,3) NULL"); } catch {}
+    try { await pool.execute("ALTER TABLE SiloFulfillmentAdditives ADD COLUMN clr DECIMAL(8,3) NULL"); } catch { }
+    try { await pool.execute("ALTER TABLE SiloFulfillmentAdditives ADD COLUMN fat DECIMAL(8,3) NULL"); } catch { }
+    try { await pool.execute("ALTER TABLE SiloFulfillmentAdditives ADD COLUMN snf DECIMAL(8,3) NULL"); } catch { }
+    try { await pool.execute("ALTER TABLE SiloFulfillmentAdditives ADD COLUMN kgFat DECIMAL(12,3) NULL"); } catch { }
+    try { await pool.execute("ALTER TABLE SiloFulfillmentAdditives ADD COLUMN kgSnf DECIMAL(12,3) NULL"); } catch { }
 };
 
 const positive = (value, field) => {
@@ -92,6 +94,8 @@ exports.fulfill = async ({
     totalQuantity,
     totalKgFat,
     totalKgSnf,
+    startTime,
+    endTime,
 }, user) => {
     const pool = await connectDB();
     await ensureTables(pool);
@@ -100,7 +104,7 @@ exports.fulfill = async ({
     const totalMilk = cleanSources.reduce((sum, source) => sum + source.quantity, 0);
     const fat = Number(resultingFat), snf = Number(resultingSnf);
     if (!Number.isFinite(fat) || fat < 0 || fat > 100 || !Number.isFinite(snf) || snf < 0 || snf > 100) throw new Error("Resulting fat and SNF must be between 0 and 100.");
-    
+
     const combinedTotal = Number(totalQuantity) > 0 ? Number(totalQuantity) : totalMilk;
 
     const conn = await pool.getConnection();
@@ -129,8 +133,9 @@ exports.fulfill = async ({
                 fulfilledById, fulfilledByName,
                 milkQuantity, milkClr, milkFat, milkSnf, milkKgFat, milkKgSnf,
                 additiveQuantity, additiveClr, additiveFat, additiveSnf, additiveKgFat, additiveKgSnf,
-                totalQuantity, totalKgFat, totalKgSnf
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                totalQuantity, totalKgFat, totalKgSnf,
+                startTime, endTime
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
             [
                 productRequestId,
                 siloId,
@@ -155,6 +160,8 @@ exports.fulfill = async ({
                 combinedTotal,
                 totalKgFat !== undefined ? Number(totalKgFat) : null,
                 totalKgSnf !== undefined ? Number(totalKgSnf) : null,
+                startTime ? new Date(startTime) : null,
+                endTime ? new Date(endTime) : null,
             ]
         );
         const fulfillmentId = insertResult.insertId ?? insertResult[0]?.insertId;

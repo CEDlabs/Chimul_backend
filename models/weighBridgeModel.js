@@ -2,6 +2,7 @@ const { connectDB, sql } = require("../config/db");
 const AuditLog = require("./auditLogModel");
 const AlternativeVehicle = require("./alternativeVehicleModel");
 const { ensureSearchIndexes, normalizePlate, freeText } = require("../utils/searchIndexes");
+const CIP = require("./cipModel");
 
 // Calendar "today" in the server's local time zone, as a YYYY-MM-DD string.
 // Used for date-window lookups (alternative vehicles). The day-boundary
@@ -80,64 +81,6 @@ async function ensureWBTable(pool) {
         `);
     } catch (e) {
         console.warn("WeighBridgeEntries table creation error:", e.message);
-    }
-
-    for (const alter of [
-        "ALTER TABLE WeighBridgeEntries ADD COLUMN entryCategory VARCHAR(30) NULL",
-        "ALTER TABLE WeighBridgeEntries ADD COLUMN vehicleType VARCHAR(50) NULL",
-    ]) {
-        try {
-            await pool.execute(alter);
-        } catch { /* column already exists */ }
-    }
-}
-
-const CO_PACKING_TYPE = "Load Tanker (Co-Packing)";
-const OTHER_VEHICLES_TYPE = "Other Vehicles";
-const BMC_TANKER_TYPE = "Load Tanker (BMC)";
-
-const entryCategoryForVehicleType = (vehicleType) => {
-    if (vehicleType === CO_PACKING_TYPE) return "BMC Loading";
-    if (vehicleType === OTHER_VEHICLES_TYPE) return "Other Vehicle";
-    return null;
-};
-
-// WayBridge purpose is one of the three operational types; legacy Loading/Unloading/Tare Check map to BMC.
-const normalizeWbPurpose = (purpose) => {
-    const p = String(purpose || "").trim();
-    if (p === CO_PACKING_TYPE || p === OTHER_VEHICLES_TYPE || p === BMC_TANKER_TYPE) return p;
-    if (p === "Loading" || p === "Unloading" || p === "Tare Check") return BMC_TANKER_TYPE;
-    return BMC_TANKER_TYPE;
-};
-
-const purposeSkipsRoute = (purpose) => {
-    const p = String(purpose || "").trim();
-    return p === CO_PACKING_TYPE || p === OTHER_VEHICLES_TYPE;
-};
-
-// Loading direction: Co-Packing purpose/vehicleType (or legacy Loading / BMC Loading category).
-const isLoadingPurpose = (purpose, entryCategory, vehicleType) => {
-    const p = String(purpose || "").trim();
-    const vt = String(vehicleType || "").trim();
-    if (p === CO_PACKING_TYPE || vt === CO_PACKING_TYPE || p === "Loading") return true;
-    if (p === OTHER_VEHICLES_TYPE || vt === OTHER_VEHICLES_TYPE) return false;
-    return entryCategory === "BMC Loading";
-};
-
-// Resolve vehicleType from today's gate entry when not provided by the client.
-async function resolveVehicleType(pool, vehicleNumber) {
-    try {
-        const rows = await pool.execute(
-            `SELECT vehicleType, routeName, entryCategory
-             FROM GateEntries
-             WHERE UPPER(vehicleNumber) = UPPER(?)
-               AND (isDeleted IS NULL OR isDeleted = 0)
-             ORDER BY createdAt DESC LIMIT 1`,
-            [vehicleNumber]
-        );
-        return rows[0] || null;
-    } catch {
-        return null;
     }
 }
 
@@ -250,6 +193,9 @@ exports.saveIntermediate = async (wbEntryId, { weight, dumpPosition, mode }) => 
 
 exports.saveTare = async (wbEntryId, tareWeight, mode) => {
     const pool = await connectDB();
+
+    const cip = await CIP.findByWBEntryId(wbEntryId);
+    if (!cip) throw new Error("CIP cleaning must be completed before tare weight can be recorded.");
 
     const cur = await pool.execute(
         "SELECT grossWeight, intermediateCount, status, purpose, entryCategory, vehicleType FROM WeighBridgeEntries WHERE wbEntryId = ?",
